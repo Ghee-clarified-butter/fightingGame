@@ -115,7 +115,7 @@ Not used: `flask-cors` (see A9), `requests`, any state/fetch library.
 
 ### Phase 0 — Toolchain (must land first; every later task depends on a green suite)
 
-- [ ] **0.1 Backend scaffold and a green pytest run.**
+- [x] **0.1 Backend scaffold and a green pytest run.**
       Files: `backend/requirements.txt`, `backend/game/__init__.py`, `backend/tests/conftest.py`,
       `.flake8` (repo root), `backend/tests/test_imports.py`.
       `conftest.py` inserts the `backend/` dir into `sys.path` (A10). `.flake8` sets

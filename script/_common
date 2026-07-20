@@ -6,22 +6,33 @@ VENV=".venv"
 
 # Pick an interpreter: an existing venv wins, then python3, then python, then the
 # Windows py launcher. Kept in one place so every script agrees on which Python runs.
-if [ -x "$VENV/bin/python" ]; then
-  VENV_PY="$VENV/bin/python"          # POSIX venv layout
-elif [ -x "$VENV/Scripts/python.exe" ]; then
-  VENV_PY="$VENV/Scripts/python.exe"  # Windows venv layout
-else
-  VENV_PY=""
-fi
+# A function rather than a one-shot check so ./script/setup can re-resolve it right
+# after creating the venv, instead of installing into whatever Python it started with.
+resolve_venv_py() {
+  if [ -x "$VENV/bin/python" ]; then
+    VENV_PY="$VENV/bin/python"          # POSIX venv layout
+  elif [ -x "$VENV/Scripts/python.exe" ]; then
+    VENV_PY="$VENV/Scripts/python.exe"  # Windows venv layout
+  else
+    VENV_PY=""
+  fi
+}
 
-if command -v python3 >/dev/null 2>&1; then
-  PYTHON="python3"
-elif command -v python >/dev/null 2>&1; then
-  PYTHON="python"
-elif command -v py >/dev/null 2>&1; then
-  PYTHON="py -3"
-else
-  echo "ERROR: no Python interpreter found on PATH (need 3.12+)." >&2
+resolve_venv_py
+
+# On Windows, `python3` is usually the Microsoft Store alias: it is on PATH and
+# `command -v` finds it, but running it only prints an install advert and exits
+# non-zero. So each candidate has to actually execute before we trust it.
+PYTHON=""
+for candidate in python3 python "py -3"; do
+  if $candidate -c "import sys; sys.exit(0)" >/dev/null 2>&1; then
+    PYTHON="$candidate"
+    break
+  fi
+done
+
+if [ -z "$PYTHON" ]; then
+  echo "ERROR: no working Python interpreter found on PATH (need 3.12+)." >&2
   exit 1
 fi
 

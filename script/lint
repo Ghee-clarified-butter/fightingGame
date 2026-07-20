@@ -8,7 +8,9 @@ cd "$(dirname "$0")/.."
 FAILED=0
 
 echo "==> Backend lint (flake8)"
-if [ -d backend ] && ls backend/*.py >/dev/null 2>&1; then
+# Look for .py anywhere under backend/, not just at its top level: the package and
+# the tests land before app.py does, and they still have to be linted.
+if [ -d backend ] && [ -n "$(find backend -name '*.py' -not -path '*/__pycache__/*' -print -quit)" ]; then
   "$VENV_PY" -m flake8 backend || FAILED=1
 else
   echo "No backend Python files yet - skipping."

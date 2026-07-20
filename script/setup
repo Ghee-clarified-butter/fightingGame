@@ -7,9 +7,19 @@ cd "$(dirname "$0")/.."
 
 echo "==> Backend"
 if [ -f backend/requirements.txt ]; then
-  if [ ! -d "$VENV" ]; then
+  # A previous interrupted run can leave a $VENV directory with no interpreter in
+  # it, so key the creation off the interpreter rather than the directory.
+  resolve_venv_py
+  if [ -z "$VENV_PY" ]; then
     echo "Creating virtualenv at $VENV"
-    "$PYTHON" -m venv "$VENV"
+    rm -rf "$VENV"
+    # Unquoted: $PYTHON may be "py -3", i.e. a command plus an argument.
+    $PYTHON -m venv "$VENV"
+    resolve_venv_py
+    if [ -z "$VENV_PY" ]; then
+      echo "ERROR: $VENV was created but has no interpreter in it." >&2
+      exit 1
+    fi
   fi
   "$VENV_PY" -m pip install --upgrade pip >/dev/null
   "$VENV_PY" -m pip install -r backend/requirements.txt
