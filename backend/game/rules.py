@@ -53,3 +53,21 @@ def legal_actions(fighter: dict) -> list[str]:
             continue
         actions.append(action)
     return actions
+
+
+def compute_damage(attacker: dict, defender: dict, power: int, spread: float) -> int:
+    """Return the damage ``attacker`` deals to ``defender`` (§4.1).
+
+    ``spread`` is passed in rather than drawn here so the formula stays a pure
+    function of its arguments: the RNG belongs to the caller, which owns the
+    §4.8 draw order.
+
+    ``atk / (atk + def)`` is a ratio, never a subtraction, so it cannot go
+    negative; the ``max(1, ...)`` floor then guarantees no matchup stalls at
+    zero. Rounding is Python's built-in ``round`` — half-to-even — exactly as
+    the spec writes it.
+    """
+    base = power * (attacker["atk"] / (attacker["atk"] + defender["def"]))
+    ascend_mul = 1.25 if attacker["ascended"] else 1.0
+    guard_mul = 0.5 if defender["guarding"] else 1.0
+    return max(1, round(base * ascend_mul * spread * guard_mul))

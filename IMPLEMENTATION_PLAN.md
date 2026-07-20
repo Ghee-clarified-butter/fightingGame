@@ -172,7 +172,7 @@ Not used: `flask-cors` (see A9), `requests`, any state/fetch library.
       ki_blast; at 40 → adds surge_beam and ascend; at 40 with `ascend_used` → no ascend; result is
       always a sorted-by-`ACTION_ORDER` list, never a set.
 
-- [ ] **1.5 Damage formula.**
+- [x] **1.5 Damage formula.**
       Files: `backend/game/rules.py`, `backend/tests/test_rules.py`.
       `compute_damage(attacker, defender, power, spread) -> int` implementing §4.1 exactly, with
       `spread` passed in as a float so the formula is testable without an RNG.
