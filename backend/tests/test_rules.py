@@ -419,3 +419,111 @@ def test_a_supplied_order_is_used_without_touching_the_rng():
     )
     assert new_state["player"]["ki"] == 55
     assert new_state["opponent"]["ki"] == 38
+
+
+def _first_spread(seed: int) -> float:
+    """The spread the attack phase draws first at ``seed`` (§4.8)."""
+    return random.Random(seed).uniform(0.90, 1.10)
+
+
+def test_strike_always_takes_at_least_one_hp():
+    match = _match_with()
+    for seed in range(20):
+        new_state, _ = resolve_turn(match, "strike", "guard", random.Random(seed))
+        assert new_state["opponent"]["hp"] <= match["opponent"]["hp"] - 1
+
+
+def test_strike_deals_the_damage_the_formula_predicts():
+    match = _match_with()
+    new_state, _ = resolve_turn(match, "strike", "charge", random.Random(7))
+    expected = compute_damage(match["player"], match["opponent"], 14, _first_spread(7))
+    assert new_state["opponent"]["hp"] == 130 - expected
+
+
+def test_ki_blast_deducts_exactly_fifteen_ki():
+    match = _match_with()
+    new_state, _ = resolve_turn(match, "ki_blast", "guard", random.Random(1))
+    assert new_state["player"]["ki"] == 15
+
+
+def test_surge_beam_deducts_exactly_forty_ki():
+    match = _match_with(player={"ki": 40})
+    new_state, _ = resolve_turn(match, "surge_beam", "guard", random.Random(1))
+    assert new_state["player"]["ki"] == 0
+
+
+def test_strike_deducts_no_ki():
+    match = _match_with()
+    new_state, _ = resolve_turn(match, "strike", "strike", random.Random(1))
+    assert new_state["player"]["ki"] == 30
+
+
+def test_guard_halves_damage_from_a_faster_attacker():
+    """§4.3: the slower fighter's Guard still counts, which is the whole point."""
+    match = _match_with()
+    guarded, _ = resolve_turn(match, "strike", "guard", random.Random(3))
+    unguarded, _ = resolve_turn(match, "strike", "charge", random.Random(3))
+
+    taken_guarded = 130 - guarded["opponent"]["hp"]
+    taken_unguarded = 130 - unguarded["opponent"]["hp"]
+    assert taken_guarded == max(1, round(taken_unguarded / 2))
+    assert taken_guarded < taken_unguarded
+
+
+def test_guarding_is_cleared_on_both_fighters_after_the_turn():
+    match = _match_with()
+    new_state, _ = resolve_turn(match, "guard", "guard", random.Random(1))
+    assert new_state["player"]["guarding"] is False
+    assert new_state["opponent"]["guarding"] is False
+
+
+def test_hp_clamps_at_zero_rather_than_going_negative():
+    match = _match_with(player={"ki": 40}, opponent={"hp": 2})
+    new_state, _ = resolve_turn(match, "surge_beam", "charge", random.Random(1))
+    assert new_state["opponent"]["hp"] == 0
+
+
+def test_a_ko_stops_the_slower_fighter_from_attacking():
+    match = _match_with(opponent={"hp": 1})
+    new_state, _ = resolve_turn(match, "strike", "strike", random.Random(1))
+    assert new_state["opponent"]["hp"] == 0
+    assert new_state["player"]["hp"] == 100
+
+
+def test_a_ko_still_leaves_the_dead_fighters_charge_applied():
+    """A8: the non-attack effects of step 3 resolved before the KO landed."""
+    match = _match_with(opponent={"hp": 1})
+    new_state, _ = resolve_turn(match, "strike", "charge", random.Random(1))
+    assert new_state["opponent"]["hp"] == 0
+    assert new_state["opponent"]["ki"] == 55
+
+
+def test_a_slower_ko_victim_never_lands_its_attack():
+    """Speed only helps if you survive to swing — here Vega moves first."""
+    match = _match_with(player={"hp": 1}, opponent={"spd": 20})
+    new_state, _ = resolve_turn(match, "strike", "strike", random.Random(1))
+    assert new_state["player"]["hp"] == 0
+    assert new_state["opponent"]["hp"] == 130
+
+
+def test_ascend_raises_damage_by_about_a_quarter_and_speed_by_five():
+    plain = _match_with(player={"ki": 40})
+    buffed = _match_with(player={"ki": 40, "ascended": True, "ascend_used": True})
+
+    plain_state, _ = resolve_turn(plain, "surge_beam", "charge", random.Random(5))
+    buffed_state, _ = resolve_turn(buffed, "surge_beam", "charge", random.Random(5))
+
+    plain_damage = 130 - plain_state["opponent"]["hp"]
+    buffed_damage = 130 - buffed_state["opponent"]["hp"]
+    assert abs(buffed_damage - plain_damage * 1.25) <= 1
+    assert effective_spd(buffed_state["player"]) == (
+        effective_spd(plain_state["player"]) + 5
+    )
+
+
+def test_a_turn_without_attacks_consumes_no_spread_draw():
+    """§4.8 allows a draw only when the step it belongs to actually happens."""
+    rng = random.Random(1)
+    before = rng.getstate()
+    resolve_turn(_match_with(), "charge", "guard", rng, order=("player", "opponent"))
+    assert rng.getstate() == before

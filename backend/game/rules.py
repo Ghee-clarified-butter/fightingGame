@@ -133,6 +133,27 @@ def _apply_support(fighter: dict, action: str) -> None:
         fighter["guarding"] = True
 
 
+SPREAD_MIN = 0.90
+SPREAD_MAX = 1.10
+
+_OTHER_SIDE = {"player": "opponent", "opponent": "player"}
+
+
+def _apply_attack(attacker: dict, defender: dict, action: str, rng) -> int:
+    """Resolve one attack and return the damage dealt (§4.1, §4.2, §4.4 step 4).
+
+    The ki cost is paid first, before damage is computed (§4.2). The spread is
+    drawn here rather than by ``compute_damage`` so the draw happens exactly
+    once per attack that actually resolves — §4.8 forbids dummy draws.
+    """
+    move = MOVES[action]
+    attacker["ki"] -= move["cost"]
+    spread = rng.uniform(SPREAD_MIN, SPREAD_MAX)
+    damage = compute_damage(attacker, defender, move["power"], spread)
+    defender["hp"] = max(0, defender["hp"] - damage)
+    return damage
+
+
 def resolve_turn(
     state: dict,
     player_action: str,
@@ -169,5 +190,21 @@ def resolve_turn(
             _apply_ascend(new_state[side])
     for side in order:
         _apply_support(new_state[side], actions[side])
+
+    # Step 4: attacks in speed order. A KO stops resolution outright, so the
+    # slower fighter never swings back — which is what makes spd and burst
+    # damage worth paying for (§4.4).
+    for side in order:
+        attacker = new_state[side]
+        defender = new_state[_OTHER_SIDE[side]]
+        if attacker["hp"] == 0:
+            break
+        if MOVES[actions[side]]["is_attack"]:
+            _apply_attack(attacker, defender, actions[side], rng)
+
+    # Step 5: Guard lasts exactly one turn (§4.3), so it is cleared on both
+    # fighters whether or not it was ever used to halve anything.
+    for side in ("player", "opponent"):
+        new_state[side]["guarding"] = False
 
     return new_state, entries

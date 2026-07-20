@@ -199,7 +199,7 @@ Not used: `flask-cors` (see A9), `requests`, any state/fetch library.
       near-cap start; Guard raises ki by exactly 8; Ascend deducts exactly 40 and latches
       `ascend_used`; both sides charging in one turn each gain their own ki.
 
-- [ ] **1.8 `resolve_turn` — attack phase, KO, and guard clearing.**
+- [x] **1.8 `resolve_turn` — attack phase, KO, and guard clearing.**
       Files: `backend/game/rules.py`, `backend/tests/test_rules.py`.
       Step 4–5: attacks resolve in the order from 1.6, paying ki (§4.2) then applying damage; hp
       clamps at 0; **a KO stops resolution** so the second fighter does not attack; `guarding` is
