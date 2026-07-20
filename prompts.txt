@@ -1,0 +1,82 @@
+================================================================================
+FIGHTING GAME — PROMPT LOG
+Every prompt given to an agent, in order.
+================================================================================
+
+# STEP 0 / BOOTSTRAP — interactive Claude Code session
+
+read the file and familiarize yourself with the project
+(referring to CLAUDE_CODE_RUNBOOK.md)
+
+yes
+(approval to run the Step 0 bootstrap: create loop.sh, AGENTS.md, PROMPT_plan.md,
+PROMPT_build.md and the required assignment files, then commit)
+
+
+# STEP 0 / BOOTSTRAP — PROMPT_plan.md (fed to the agent by loop.sh in plan mode)
+
+You are in PLAN MODE. Do NOT write application code.
+
+1. Read AGENTS.md and every file in specs/.
+2. Read the current codebase and compare it against the active spec (the newest specs/*.md).
+3. Rewrite IMPLEMENTATION_PLAN.md as a prioritized, checkbox task list ("- [ ] ...") that, if
+   completed in order, fully satisfies the spec's acceptance criteria. Each task must be small,
+   independently testable, and name the files it touches and the tests it needs.
+4. Order tasks so that pure game-rule logic and its unit tests come before HTTP endpoints, and
+   endpoints come before UI.
+5. Verify any library you reference actually exists and is compatible with the stack in AGENTS.md.
+
+Commit the updated plan with a "chore: update implementation plan" message.
+When the plan is complete, internally consistent, and needs no further changes, print exactly:
+<promise>DONE</promise>
+
+
+# STEP 0 / BOOTSTRAP — PROMPT_build.md (fed to the agent by loop.sh in build mode)
+
+You are in BUILD MODE.
+
+1. Read AGENTS.md, the active spec in specs/, and IMPLEMENTATION_PLAN.md.
+2. Pick the single highest-priority unchecked task in IMPLEMENTATION_PLAN.md.
+3. Implement it fully — no stubs, no placeholders. Write/extend tests for it.
+4. Run `./script/test`. If anything fails, fix it in this same iteration before committing.
+5. Check the task's box in IMPLEMENTATION_PLAN.md.
+6. Commit with a Conventional Commit message describing the change.
+
+Do only ONE task per iteration. If, after your commit, every plan item is checked, `./script/test`
+passes, and all acceptance criteria in the active spec are met, print exactly:
+<promise>DONE</promise>
+Otherwise, stop after the single task and let the loop invoke you again.
+
+
+================================================================================
+# STEP 1 — BASE ARENA
+================================================================================
+
+# STEP 1 / STAGE 1 — SPECIFY (manual)
+(pending)
+
+# STEP 1 / STAGE 2 — REVIEW (manual)
+(pending)
+
+# STEP 1 / STAGE 3 — PLAN (loop)
+(pending)
+
+# STEP 1 / STAGE 4 — BUILD (loop)
+(pending)
+
+
+================================================================================
+# STEP 2 — EXTENSION (AI opponent + persistent tournament)
+================================================================================
+
+# STEP 2 / STAGE 1 — SPECIFY (manual)
+(pending)
+
+# STEP 2 / STAGE 2 — REVIEW (manual)
+(pending)
+
+# STEP 2 / STAGE 3 — PLAN (loop)
+(pending)
+
+# STEP 2 / STAGE 4 — BUILD (loop)
+(pending)
