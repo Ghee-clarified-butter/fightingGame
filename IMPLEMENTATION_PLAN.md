@@ -139,7 +139,7 @@ Not used: `flask-cors` (see A9), `requests`, any state/fetch library.
 
 ### Phase 1 — Pure game rules (`backend/game/`), no Flask, no HTTP
 
-- [ ] **1.1 Fighter templates.**
+- [x] **1.1 Fighter templates.**
       Files: `backend/game/fighters.py`, `backend/tests/test_fighters.py`.
       `FIGHTERS: dict[str, dict]` with `kaito` and `vega` at the exact §2.1 numbers, and
       `new_fighter(fighter_id) -> dict` returning a fresh independent copy with `hp = hp_max`,
