@@ -67,8 +67,31 @@ done, it must be the very last line of your output, with nothing after it.
 # STEP 1 — BASE ARENA
 ================================================================================
 
-# STEP 1 / STAGE 1 — SPECIFY (manual)
-(pending)
+# STEP 1 / STAGE 1 — SPECIFY (manual, interactive Claude Code session)
+
+yes, can you do it?
+(approval to run Stage 1; the stage prompt executed was:)
+
+Read AGENTS.md. Write specs/base.md — a specification for "Fighting Game", a turn-based
+1v1 battle arena with server-authoritative turn resolution.
+
+Cover:
+- Fighter model: hp, ki, atk, def, spd, plus per-match "ascended" and "ascend_used" flags.
+- Two starter fighters, Kaito and Vega, with distinct stat spreads (one glass-cannon, one tanky).
+- Moves and exact rules for each: Strike (0 ki, small dmg), Ki Blast (small ki, medium dmg),
+  Surge Beam (large ki, high dmg), Charge (restore ki, no attack), Guard (halve next incoming
+  damage + restore small ki), Ascend (once/match: spend ki, permanently buff atk & spd).
+- Damage formula using atk vs def with a small random spread, how guard and ascend modify it,
+  and how ki costs/regen work. Make the numbers concrete.
+- A single resolve-turn operation: input = both fighters' state + player action + opponent action;
+  output = new state + a battle-log line. Opponent for the base game just picks a legal random move.
+- REST endpoints: start a match, submit a turn, get match state. Define request/response JSON.
+- Win/lose condition and how the battle log is represented.
+- Acceptance criteria as a checklist a reviewer can verify, and a test plan (unit tests for the
+  damage/ki rules, endpoint tests for the API).
+
+Also create the script/ files (setup, server, test, lint) so the stack in AGENTS.md runs.
+Do not implement game logic yet — spec and scripts only.
 
 # STEP 1 / STAGE 2 — REVIEW (manual)
 (pending)
