@@ -164,7 +164,7 @@ Not used: `flask-cors` (see A9), `requests`, any state/fetch library.
       Tests: fresh match has `turn == 0`, empty `log`, both fighters at full hp and 30 ki,
       `status == "in_progress"`; a mirror match (`kaito` vs `kaito`) is constructed without error.
 
-- [ ] **1.4 `legal_actions`.**
+- [x] **1.4 `legal_actions`.**
       Files: `backend/game/rules.py`, `backend/tests/test_rules.py`.
       `legal_actions(fighter) -> list[str]` in `ACTION_ORDER` order: strike/charge/guard always;
       ki_blast iff `ki >= 15`; surge_beam iff `ki >= 40`; ascend iff `ki >= 40 and not ascend_used`.

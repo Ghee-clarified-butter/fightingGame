@@ -12,6 +12,7 @@ rules. The app layer adds it when serializing (§5.5).
 """
 
 from game.fighters import new_fighter
+from game.moves import ACTION_ORDER, MOVES
 
 STATUS_IN_PROGRESS = "in_progress"
 
@@ -31,3 +32,24 @@ def new_match(player_id: str, opponent_id: str) -> dict:
         "opponent": new_fighter(opponent_id),
         "log": [],
     }
+
+
+def legal_actions(fighter: dict) -> list[str]:
+    """Return the actions ``fighter`` may take right now, in ``ACTION_ORDER``.
+
+    A move is legal when the fighter can pay its ki cost (§3, §4.2), so Strike,
+    Charge and Guard are always available — including at 0 ki (§4.3). Ascend
+    carries the extra once-per-match precondition (§3).
+
+    The result is a list, never a set: the opponent's uniform choice draws from
+    it, and a set's iteration order would break seeded reproducibility (§4.8).
+    """
+    actions = []
+    for action in ACTION_ORDER:
+        move = MOVES[action]
+        if fighter["ki"] < move["cost"]:
+            continue
+        if action == "ascend" and fighter["ascend_used"]:
+            continue
+        actions.append(action)
+    return actions
