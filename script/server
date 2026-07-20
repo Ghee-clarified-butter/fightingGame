@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Run Flask on :5000 and Vite on :5173. Ctrl+C stops both.
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+. script/_common
+
+if [ ! -f backend/app.py ]; then
+  echo "ERROR: backend/app.py does not exist yet - run the build stage first." >&2
+  exit 1
+fi
+
+PIDS=()
+cleanup() {
+  echo ""
+  echo "==> Shutting down..."
+  for pid in "${PIDS[@]+"${PIDS[@]}"}"; do
+    kill "$pid" 2>/dev/null || true
+  done
+  wait 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
+echo "==> Backend on http://localhost:5000"
+(cd backend && FLASK_APP=app.py "../$VENV_PY" -m flask run --port 5000) &
+PIDS+=($!)
+
+if [ -f frontend/package.json ]; then
+  echo "==> Frontend on http://localhost:5173"
+  (cd frontend && npm run dev -- --port 5173) &
+  PIDS+=($!)
+else
+  echo "frontend/package.json not found yet - backend only."
+fi
+
+wait

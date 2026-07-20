@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Install backend + frontend dependencies. Safe to re-run.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+. script/_common
+
+echo "==> Backend"
+if [ -f backend/requirements.txt ]; then
+  if [ ! -d "$VENV" ]; then
+    echo "Creating virtualenv at $VENV"
+    "$PYTHON" -m venv "$VENV"
+  fi
+  "$VENV_PY" -m pip install --upgrade pip >/dev/null
+  "$VENV_PY" -m pip install -r backend/requirements.txt
+else
+  echo "backend/requirements.txt not found yet - skipping (created during the build stage)."
+fi
+
+echo "==> Frontend"
+if [ -f frontend/package.json ]; then
+  if [ -f frontend/package-lock.json ]; then
+    (cd frontend && npm ci)
+  else
+    (cd frontend && npm install)
+  fi
+else
+  echo "frontend/package.json not found yet - skipping (created during the build stage)."
+fi
+
+echo "==> Done."

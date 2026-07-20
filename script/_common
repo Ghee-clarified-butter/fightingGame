@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Shared helpers, sourced by the other script/* entry points.
+# Not an entry point itself.
+
+VENV=".venv"
+
+# Pick an interpreter: an existing venv wins, then python3, then python, then the
+# Windows py launcher. Kept in one place so every script agrees on which Python runs.
+if [ -x "$VENV/bin/python" ]; then
+  VENV_PY="$VENV/bin/python"          # POSIX venv layout
+elif [ -x "$VENV/Scripts/python.exe" ]; then
+  VENV_PY="$VENV/Scripts/python.exe"  # Windows venv layout
+else
+  VENV_PY=""
+fi
+
+if command -v python3 >/dev/null 2>&1; then
+  PYTHON="python3"
+elif command -v python >/dev/null 2>&1; then
+  PYTHON="python"
+elif command -v py >/dev/null 2>&1; then
+  PYTHON="py -3"
+else
+  echo "ERROR: no Python interpreter found on PATH (need 3.12+)." >&2
+  exit 1
+fi
+
+# Before ./script/setup has run there is no venv; fall back to the system interpreter
+# so the scripts still produce a useful message instead of a bare "not found".
+[ -z "$VENV_PY" ] && VENV_PY="$PYTHON"
+
+export VENV VENV_PY PYTHON

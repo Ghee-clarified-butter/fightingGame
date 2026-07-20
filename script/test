@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Run backend (pytest) and frontend (vitest) tests. Non-zero exit if either fails.
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+. script/_common
+
+FAILED=0
+
+echo "==> Backend tests (pytest)"
+if [ -d backend/tests ]; then
+  "$VENV_PY" -m pytest backend/tests -q || FAILED=1
+else
+  echo "backend/tests not found yet - skipping."
+fi
+
+echo ""
+echo "==> Frontend tests (vitest)"
+if [ -f frontend/package.json ]; then
+  (cd frontend && npm run test -- --run) || FAILED=1
+else
+  echo "frontend/package.json not found yet - skipping."
+fi
+
+echo ""
+if [ "$FAILED" -ne 0 ]; then
+  echo "==> FAILED"
+  exit 1
+fi
+echo "==> All tests passed."

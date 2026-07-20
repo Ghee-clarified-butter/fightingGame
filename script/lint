@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# flake8 (backend) + eslint (frontend). Non-zero exit if either fails.
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+. script/_common
+
+FAILED=0
+
+echo "==> Backend lint (flake8)"
+if [ -d backend ] && ls backend/*.py >/dev/null 2>&1; then
+  "$VENV_PY" -m flake8 backend || FAILED=1
+else
+  echo "No backend Python files yet - skipping."
+fi
+
+echo ""
+echo "==> Frontend lint (eslint)"
+if [ -f frontend/package.json ]; then
+  (cd frontend && npm run lint) || FAILED=1
+else
+  echo "frontend/package.json not found yet - skipping."
+fi
+
+echo ""
+if [ "$FAILED" -ne 0 ]; then
+  echo "==> LINT FAILED"
+  exit 1
+fi
+echo "==> Lint clean."
