@@ -1,10 +1,19 @@
 """Tests for the pure game rules (spec §4)."""
 
+import copy
+import random
+
 import pytest
 
 from game.fighters import UnknownFighterError, new_fighter
 from game.moves import ACTION_ORDER
-from game.rules import compute_damage, legal_actions, new_match
+from game.rules import (
+    compute_damage,
+    effective_spd,
+    legal_actions,
+    new_match,
+    roll_turn_order,
+)
 
 
 def test_fresh_match_has_the_spec_shape():
@@ -220,3 +229,89 @@ def test_compute_damage_does_not_mutate_its_fighters():
     before = (dict(kaito), dict(vega))
     compute_damage(kaito, vega, 48, 1.10)
     assert (kaito, vega) == before
+
+
+# --- 1.6 turn order and the tie coin flip (§4.4, §4.8; A2, A3) ----------------
+
+
+class FixedRng:
+    """A stand-in that returns a pinned value, to assert A3's *method*."""
+
+    def __init__(self, value: float):
+        self.value = value
+
+    def random(self) -> float:
+        return self.value
+
+
+def test_effective_spd_adds_five_only_while_ascended():
+    kaito = new_fighter("kaito")
+    assert effective_spd(kaito) == 14
+    assert effective_spd(dict(kaito, ascended=True)) == 19
+
+
+def test_faster_fighter_goes_first_without_consuming_a_draw():
+    """Kaito (14) beats Vega (9) outright, so §4.8 allows no coin flip."""
+    match = new_match("kaito", "vega")
+    rng = random.Random(1234)
+    before = rng.getstate()
+    assert roll_turn_order(match, rng) == ("player", "opponent")
+    assert rng.getstate() == before
+
+
+def test_slower_player_resolves_second_without_consuming_a_draw():
+    match = new_match("vega", "kaito")
+    rng = random.Random(1234)
+    before = rng.getstate()
+    assert roll_turn_order(match, rng) == ("opponent", "player")
+    assert rng.getstate() == before
+
+
+def test_mirror_match_consumes_exactly_one_draw():
+    match = new_match("kaito", "kaito")
+    rng = random.Random(7)
+    probe = random.Random(7)
+    probe.random()
+    roll_turn_order(match, rng)
+    assert rng.getstate() == probe.getstate()
+
+
+def test_mirror_match_reaches_both_orders_across_seeds():
+    match = new_match("kaito", "kaito")
+    seen = {roll_turn_order(match, random.Random(seed)) for seed in range(50)}
+    assert seen == {("player", "opponent"), ("opponent", "player")}
+
+
+def test_tie_flip_method_is_random_below_one_half():
+    """A3 pins the method, not just the outcome: < 0.5 → player first."""
+    match = new_match("kaito", "kaito")
+    assert roll_turn_order(match, FixedRng(0.49)) == ("player", "opponent")
+    assert roll_turn_order(match, FixedRng(0.5)) == ("opponent", "player")
+
+
+def test_ascended_vega_ties_kaito_and_triggers_a_flip():
+    match = new_match("kaito", "vega")
+    match["opponent"]["ascended"] = True  # 9 + 5 = 14, tying Kaito
+    rng = random.Random(3)
+    probe = random.Random(3)
+    probe.random()
+    roll_turn_order(match, rng)
+    assert rng.getstate() == probe.getstate()
+
+
+def test_ascending_this_turn_does_not_change_this_turns_order():
+    """A2: order is read from start-of-turn speeds, so no draw happens here."""
+    match = new_match("kaito", "vega")
+    rng = random.Random(99)
+    before = rng.getstate()
+    order = roll_turn_order(match, rng)
+    match["opponent"]["ascended"] = True  # resolves later in the same turn
+    assert order == ("player", "opponent")
+    assert rng.getstate() == before
+
+
+def test_roll_turn_order_does_not_mutate_the_state():
+    match = new_match("kaito", "kaito")
+    before = copy.deepcopy(match)
+    roll_turn_order(match, random.Random(5))
+    assert match == before

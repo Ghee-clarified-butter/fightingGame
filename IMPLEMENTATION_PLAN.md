@@ -181,7 +181,7 @@ Not used: `flask-cors` (see A9), `requests`, any state/fetch library.
       guard halves; the `max(1, ...)` floor holds for a contrived tiny-power / huge-def case;
       A5's banker's rounding is asserted on at least one exact `.5` case.
 
-- [ ] **1.6 Turn order and the tie coin flip.**
+- [x] **1.6 Turn order and the tie coin flip.**
       Files: `backend/game/rules.py`, `backend/tests/test_rules.py`.
       `effective_spd(fighter)` (`spd + 5` if `ascended`) and `roll_turn_order(state, rng)` per A2/A3:
       no draw when speeds differ, one `rng.random()` draw when equal.

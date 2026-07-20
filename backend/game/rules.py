@@ -71,3 +71,31 @@ def compute_damage(attacker: dict, defender: dict, power: int, spread: float) ->
     ascend_mul = 1.25 if attacker["ascended"] else 1.0
     guard_mul = 0.5 if defender["guarding"] else 1.0
     return max(1, round(base * ascend_mul * spread * guard_mul))
+
+
+def effective_spd(fighter: dict) -> int:
+    """Return ``fighter``'s speed for turn-order purposes (§3, §4.4).
+
+    Ascend's permanent +5 counts as soon as the buff is on the fighter.
+    """
+    return fighter["spd"] + (5 if fighter["ascended"] else 0)
+
+
+def roll_turn_order(state: dict, rng) -> tuple[str, str]:
+    """Return the two sides in resolution order, fastest first (§4.4).
+
+    Speeds are read **entering** the turn, before any of this turn's actions
+    resolve: the tie flip is draw #1 in §4.8's order, and the opponent's move —
+    which is what could add an Ascend +5 — is only drawn at #2. So a fighter
+    that ascends on turn *n* gets its speed edge from turn *n+1* onwards.
+
+    A draw is consumed only when the speeds actually tie (§4.8, no dummy
+    draws); the tie is settled by ``rng.random() < 0.5`` → player first.
+    """
+    player_spd = effective_spd(state["player"])
+    opponent_spd = effective_spd(state["opponent"])
+    if player_spd > opponent_spd:
+        return ("player", "opponent")
+    if opponent_spd > player_spd:
+        return ("opponent", "player")
+    return ("player", "opponent") if rng.random() < 0.5 else ("opponent", "player")
