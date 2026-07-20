@@ -221,7 +221,7 @@ Not used: `flask-cors` (see A9), `requests`, any state/fetch library.
       `target_hp` equal to the actor's opponent's unchanged hp; a KO'd second fighter that charged
       still logs its charge but no attack (A8); a KO'd second fighter that attacked logs nothing.
 
-- [ ] **1.10 Win condition and the turn cap.**
+- [x] **1.10 Win condition and the turn cap.**
       Files: `backend/game/rules.py`, `backend/tests/test_rules.py`.
       `check_status(state)`: 0 hp → `player_won`/`opponent_won`; at `turn == 100` with both alive,
       compare `player.hp * opponent.hp_max` vs `opponent.hp * player.hp_max` (§4.6, integer

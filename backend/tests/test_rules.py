@@ -8,6 +8,8 @@ import pytest
 from game.fighters import UnknownFighterError, new_fighter
 from game.moves import ACTION_ORDER
 from game.rules import (
+    TURN_CAP,
+    check_status,
     compute_damage,
     effective_spd,
     legal_actions,
@@ -666,3 +668,98 @@ def test_logging_a_turn_does_not_mutate_the_input_log():
     new_state, _ = resolve_turn(match, "strike", "guard", random.Random(1))
     assert match == before
     assert new_state["log"] is not match["log"]
+
+
+# --- 1.10 Win condition and the turn cap (§4.6) ------------------------------
+
+
+def test_a_fresh_match_is_in_progress():
+    assert check_status(new_match("kaito", "vega")) == "in_progress"
+
+
+def test_zero_hp_on_the_opponent_is_a_player_win():
+    assert check_status(_match_with(opponent={"hp": 0})) == "player_won"
+
+
+def test_zero_hp_on_the_player_is_an_opponent_win():
+    assert check_status(_match_with(player={"hp": 0})) == "opponent_won"
+
+
+def test_a_ko_ends_the_match_even_before_the_cap():
+    """A KO is read before the turn count, so it wins at any turn (§4.6)."""
+    match = _match_with(opponent={"hp": 0})
+    match["turn"] = 7
+    assert check_status(match) == "player_won"
+
+
+def test_resolve_turn_sets_the_status_when_it_lands_a_ko():
+    """Step 6 checks the win condition, so the caller never has to (§4.4)."""
+    match = _match_with(opponent={"hp": 1})
+    new_state, _ = resolve_turn(match, "strike", "charge", random.Random(1))
+    assert new_state["opponent"]["hp"] == 0
+    assert new_state["status"] == "player_won"
+
+
+def test_resolve_turn_leaves_an_undecided_match_in_progress():
+    new_state, _ = resolve_turn(_match_with(), "strike", "charge", random.Random(1))
+    assert new_state["status"] == "in_progress"
+
+
+def test_the_turn_before_the_cap_is_still_in_progress():
+    match = _match_with(player={"hp": 50}, opponent={"hp": 60})
+    match["turn"] = TURN_CAP - 1
+    assert check_status(match) == "in_progress"
+
+
+def test_the_cap_is_a_hundred_turns():
+    assert TURN_CAP == 100
+
+
+def test_the_cap_resolves_by_cross_multiplied_hp_fraction():
+    """Kaito 50/100 (0.50) beats Vega 60/130 (~0.46): 6500 > 6000."""
+    match = _match_with(player={"hp": 50}, opponent={"hp": 60})
+    match["turn"] = TURN_CAP
+    assert check_status(match) == "player_won"
+
+
+def test_the_cap_can_be_won_on_fraction_while_losing_on_raw_hp():
+    """Vega 70/130 (~0.54) beats Kaito 50/100 even though 70 > 50 raw."""
+    match = _match_with(player={"hp": 50}, opponent={"hp": 70})
+    match["turn"] = TURN_CAP
+    assert check_status(match) == "opponent_won"
+
+
+def test_an_exactly_equal_cap_is_a_draw():
+    """Kaito 50/100 vs Vega 65/130: 50*130 == 65*100 == 6500."""
+    match = _match_with(player={"hp": 50}, opponent={"hp": 65})
+    match["turn"] = TURN_CAP
+    assert match["player"]["hp"] * match["opponent"]["hp_max"] == 6500
+    assert match["opponent"]["hp"] * match["player"]["hp_max"] == 6500
+    assert check_status(match) == "draw"
+
+
+def test_the_cap_comparison_is_exact_to_a_single_hp():
+    """Integer cross-products, so the draw boundary carries no epsilon."""
+    cases = ((51, 65, "player_won"), (50, 65, "draw"), (50, 66, "opponent_won"))
+    for player_hp, opponent_hp, expected in cases:
+        match = _match_with(player={"hp": player_hp}, opponent={"hp": opponent_hp})
+        match["turn"] = TURN_CAP
+        assert check_status(match) == expected
+
+
+def test_the_cap_comparison_never_divides():
+    """§4.6: both scores are ints, so no binary rounding can reach the result."""
+    match = _match_with(player={"hp": 50}, opponent={"hp": 65})
+    match["turn"] = TURN_CAP
+    player_score = match["player"]["hp"] * match["opponent"]["hp_max"]
+    opponent_score = match["opponent"]["hp"] * match["player"]["hp_max"]
+    assert isinstance(player_score, int)
+    assert isinstance(opponent_score, int)
+
+
+def test_check_status_does_not_mutate_the_state():
+    match = _match_with(player={"hp": 50}, opponent={"hp": 65})
+    match["turn"] = TURN_CAP
+    before = copy.deepcopy(match)
+    check_status(match)
+    assert match == before

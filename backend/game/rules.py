@@ -17,6 +17,11 @@ from game.fighters import new_fighter
 from game.moves import ACTION_ORDER, MOVES
 
 STATUS_IN_PROGRESS = "in_progress"
+STATUS_PLAYER_WON = "player_won"
+STATUS_OPPONENT_WON = "opponent_won"
+STATUS_DRAW = "draw"
+
+TURN_CAP = 100
 
 CHARGE_KI = 25
 CHARGE_KI_ASCENDED = 30
@@ -214,6 +219,35 @@ def _log_entry(
     }
 
 
+def check_status(state: dict) -> str:
+    """Return the status ``state`` has reached (§4.6).
+
+    A KO takes precedence over the cap: attacks resolve sequentially (§4.4), so
+    at most one fighter can be at 0 hp and ``draw`` has exactly one cause — the
+    turn cap with both alive.
+
+    The cap comparison is integer cross-multiplication, never ``hp / hp_max``:
+    dividing would make the ``draw`` case hinge on binary rounding, so an
+    exactly-equal pair would tie or not by luck.
+    """
+    player = state["player"]
+    opponent = state["opponent"]
+    if player["hp"] == 0:
+        return STATUS_OPPONENT_WON
+    if opponent["hp"] == 0:
+        return STATUS_PLAYER_WON
+    if state["turn"] < TURN_CAP:
+        return STATUS_IN_PROGRESS
+
+    player_score = player["hp"] * opponent["hp_max"]
+    opponent_score = opponent["hp"] * player["hp_max"]
+    if player_score > opponent_score:
+        return STATUS_PLAYER_WON
+    if opponent_score > player_score:
+        return STATUS_OPPONENT_WON
+    return STATUS_DRAW
+
+
 def resolve_turn(
     state: dict,
     player_action: str,
@@ -279,4 +313,9 @@ def resolve_turn(
         new_state[side]["guarding"] = False
 
     new_state["log"].extend(entries)
+
+    # The rest of step 6: the win condition is checked once the turn is fully
+    # resolved, so a KO landed this turn — or the cap being reached by this very
+    # increment — is already visible in the state it is read from (§4.6).
+    new_state["status"] = check_status(new_state)
     return new_state, entries
