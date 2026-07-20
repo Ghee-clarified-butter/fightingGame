@@ -155,7 +155,7 @@ Not used: `flask-cors` (see A9), `requests`, any state/fetch library.
       Tests: exactly six moves; costs are strike/charge/guard 0, ki_blast 15, surge_beam 40,
       ascend 40; powers 14/26/48; Charge, Guard and Ascend are not attacks.
 
-- [ ] **1.3 Match state construction.**
+- [x] **1.3 Match state construction.**
       Files: `backend/game/rules.py`, `backend/tests/test_rules.py`.
       `new_match(player_id, opponent_id) -> dict` producing the §5.5 shape minus HTTP concerns
       (no RNG argument — creation consumes no draws, per §4.8's no-dummy-draws rule):
