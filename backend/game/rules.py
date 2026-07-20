@@ -11,10 +11,16 @@ A match state is a plain dict so serialization is a no-op:
 rules. The app layer adds it when serializing (§5.5).
 """
 
+import copy
+
 from game.fighters import new_fighter
 from game.moves import ACTION_ORDER, MOVES
 
 STATUS_IN_PROGRESS = "in_progress"
+
+CHARGE_KI = 25
+CHARGE_KI_ASCENDED = 30
+GUARD_KI = 8
 
 
 def new_match(player_id: str, opponent_id: str) -> dict:
@@ -99,3 +105,69 @@ def roll_turn_order(state: dict, rng) -> tuple[str, str]:
     if opponent_spd > player_spd:
         return ("opponent", "player")
     return ("player", "opponent") if rng.random() < 0.5 else ("opponent", "player")
+
+
+def _restore_ki(fighter: dict, amount: int) -> None:
+    """Add ``amount`` ki to ``fighter``, clamped at ``ki_max`` (§4.2)."""
+    fighter["ki"] = min(fighter["ki_max"], fighter["ki"] + amount)
+
+
+def _apply_ascend(fighter: dict) -> None:
+    """Pay for and latch Ascend (§3, §4.4 step 2).
+
+    ``ascend_used`` is separate from ``ascended`` because the buff is permanent
+    but the *permission* is once per match: nothing ever clears either flag, and
+    ``legal_actions`` reads ``ascend_used`` to reject a second attempt.
+    """
+    fighter["ki"] -= MOVES["ascend"]["cost"]
+    fighter["ascended"] = True
+    fighter["ascend_used"] = True
+
+
+def _apply_support(fighter: dict, action: str) -> None:
+    """Apply Charge or Guard (§3, §4.4 step 3)."""
+    if action == "charge":
+        _restore_ki(fighter, CHARGE_KI_ASCENDED if fighter["ascended"] else CHARGE_KI)
+    elif action == "guard":
+        _restore_ki(fighter, GUARD_KI)
+        fighter["guarding"] = True
+
+
+def resolve_turn(
+    state: dict,
+    player_action: str,
+    opponent_action: str,
+    rng,
+    *,
+    order: tuple[str, str] | None = None,
+) -> tuple[dict, list[dict]]:
+    """Resolve one turn and return ``(new_state, entries)`` (§4.4, §6).
+
+    The input state is never mutated: everything happens on a deep copy, so a
+    caller that rejects the result still holds its original (§5.4).
+
+    ``order`` is keyword-only and optional. §4.8 puts the tie coin flip *before*
+    the opponent's move choice, so the app layer rolls the order first and
+    passes it in; when it is ``None`` this rolls one itself, which keeps a
+    single-turn unit test to one call.
+
+    Both actions are assumed already validated (§4.4 step 1); validation is the
+    HTTP layer's job (§5.4).
+    """
+    if order is None:
+        order = roll_turn_order(state, rng)
+
+    new_state = copy.deepcopy(state)
+    actions = {"player": player_action, "opponent": opponent_action}
+    entries: list[dict] = []
+
+    # Steps 2 and 3 run as two passes over both fighters, in the spec's order:
+    # every non-attack effect lands before any attack is computed, which is what
+    # lets a slower fighter's Guard halve a faster opponent's hit (§4.3).
+    for side in order:
+        if actions[side] == "ascend":
+            _apply_ascend(new_state[side])
+    for side in order:
+        _apply_support(new_state[side], actions[side])
+
+    return new_state, entries

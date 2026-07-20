@@ -190,7 +190,7 @@ Not used: `flask-cors` (see A9), `requests`, any state/fetch library.
       are reachable across seeds; an already-`ascended` Vega (14) ties Kaito (14) and triggers a flip;
       a fighter that ascends *this* turn does not change *this* turn's order (A2).
 
-- [ ] **1.7 `resolve_turn` — effects phase.**
+- [x] **1.7 `resolve_turn` — effects phase.**
       Files: `backend/game/rules.py`, `backend/tests/test_rules.py`.
       Steps 2–3 of §4.4: Ascend (pay 40 ki, set `ascended` and `ascend_used`, no damage), then
       Charge (+25 ki, +30 if `ascended`) and Guard (+8 ki, set `guarding`), both clamped to `ki_max`.

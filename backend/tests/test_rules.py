@@ -12,6 +12,7 @@ from game.rules import (
     effective_spd,
     legal_actions,
     new_match,
+    resolve_turn,
     roll_turn_order,
 )
 
@@ -315,3 +316,106 @@ def test_roll_turn_order_does_not_mutate_the_state():
     before = copy.deepcopy(match)
     roll_turn_order(match, random.Random(5))
     assert match == before
+
+
+# --- 1.7 resolve_turn, effects phase (§4.4 steps 2-3) ------------------------
+#
+# Only non-attack actions appear here so the assertions are about the effects
+# phase alone.
+
+
+def _match_with(player: dict | None = None, opponent: dict | None = None) -> dict:
+    """A kaito-vs-vega match whose fighters carry the given field overrides."""
+    match = new_match("kaito", "vega")
+    match["player"].update(player or {})
+    match["opponent"].update(opponent or {})
+    return match
+
+
+def test_charge_restores_exactly_twenty_five_ki():
+    match = _match_with()
+    new_state, _ = resolve_turn(match, "charge", "guard", random.Random(1))
+    assert new_state["player"]["ki"] == 55
+
+
+def test_charge_restores_thirty_ki_while_ascended():
+    match = _match_with(player={"ascended": True, "ascend_used": True})
+    new_state, _ = resolve_turn(match, "charge", "guard", random.Random(1))
+    assert new_state["player"]["ki"] == 60
+
+
+def test_charge_never_exceeds_ki_max():
+    match = _match_with(player={"ki": 90}, opponent={"ki": 125})
+    new_state, _ = resolve_turn(match, "charge", "charge", random.Random(1))
+    assert new_state["player"]["ki"] == 100
+    assert new_state["opponent"]["ki"] == 100
+
+
+def test_guard_restores_exactly_eight_ki():
+    match = _match_with()
+    new_state, _ = resolve_turn(match, "guard", "charge", random.Random(1))
+    assert new_state["player"]["ki"] == 38
+
+
+def test_guard_ki_also_clamps_at_the_ceiling():
+    match = _match_with(player={"ki": 95})
+    new_state, _ = resolve_turn(match, "guard", "charge", random.Random(1))
+    assert new_state["player"]["ki"] == 100
+
+
+def test_both_sides_charging_each_gain_their_own_ki():
+    match = _match_with()
+    new_state, _ = resolve_turn(match, "charge", "charge", random.Random(1))
+    assert new_state["player"]["ki"] == 55
+    assert new_state["opponent"]["ki"] == 55
+
+
+def test_ascend_pays_forty_ki_and_latches_its_flags():
+    match = _match_with(player={"ki": 40})
+    new_state, _ = resolve_turn(match, "ascend", "guard", random.Random(1))
+    ascender = new_state["player"]
+    assert ascender["ki"] == 0
+    assert ascender["ascended"] is True
+    assert ascender["ascend_used"] is True
+
+
+def test_ascend_leaves_the_other_fighter_alone():
+    match = _match_with(player={"ki": 40})
+    new_state, _ = resolve_turn(match, "ascend", "charge", random.Random(1))
+    assert new_state["opponent"]["ascended"] is False
+    assert new_state["opponent"]["ascend_used"] is False
+    assert new_state["opponent"]["ki"] == 55
+
+
+def test_ascend_the_same_turn_does_not_boost_that_turns_charge():
+    """The +5 ki only reaches a Charge on a *later* turn — one action per turn."""
+    match = _match_with(opponent={"ki": 40})
+    new_state, _ = resolve_turn(match, "charge", "ascend", random.Random(1))
+    assert new_state["player"]["ki"] == 55
+
+
+def test_both_sides_ascending_in_one_turn():
+    match = _match_with(player={"ki": 40}, opponent={"ki": 100})
+    new_state, _ = resolve_turn(match, "ascend", "ascend", random.Random(1))
+    assert new_state["player"]["ki"] == 0
+    assert new_state["opponent"]["ki"] == 60
+    assert new_state["player"]["ascended"] is True
+    assert new_state["opponent"]["ascended"] is True
+
+
+def test_effects_phase_does_not_mutate_the_input_state():
+    match = _match_with(player={"ki": 40})
+    before = copy.deepcopy(match)
+    new_state, _ = resolve_turn(match, "ascend", "charge", random.Random(1))
+    assert match == before
+    assert new_state is not match
+
+
+def test_a_supplied_order_is_used_without_touching_the_rng():
+    """A1: the app layer rolls the order first, so resolve_turn must not."""
+    match = _match_with()
+    new_state, _ = resolve_turn(
+        match, "charge", "guard", None, order=("opponent", "player")
+    )
+    assert new_state["player"]["ki"] == 55
+    assert new_state["opponent"]["ki"] == 38
