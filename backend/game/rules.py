@@ -107,9 +107,16 @@ def roll_turn_order(state: dict, rng) -> tuple[str, str]:
     return ("player", "opponent") if rng.random() < 0.5 else ("opponent", "player")
 
 
-def _restore_ki(fighter: dict, amount: int) -> None:
-    """Add ``amount`` ki to ``fighter``, clamped at ``ki_max`` (§4.2)."""
-    fighter["ki"] = min(fighter["ki_max"], fighter["ki"] + amount)
+def _restore_ki(fighter: dict, amount: int) -> int:
+    """Add ``amount`` ki to ``fighter``, clamped at ``ki_max`` (§4.2).
+
+    Returns the ki actually gained, which is less than ``amount`` at the cap —
+    the log quotes this number rather than the nominal one, so a Charge into a
+    nearly full bar does not claim ki it never restored (§4.2).
+    """
+    before = fighter["ki"]
+    fighter["ki"] = min(fighter["ki_max"], before + amount)
+    return fighter["ki"] - before
 
 
 def _apply_ascend(fighter: dict) -> None:
@@ -124,13 +131,16 @@ def _apply_ascend(fighter: dict) -> None:
     fighter["ascend_used"] = True
 
 
-def _apply_support(fighter: dict, action: str) -> None:
-    """Apply Charge or Guard (§3, §4.4 step 3)."""
+def _apply_support(fighter: dict, action: str) -> int:
+    """Apply Charge or Guard and return the ki gained (§3, §4.4 step 3)."""
     if action == "charge":
-        _restore_ki(fighter, CHARGE_KI_ASCENDED if fighter["ascended"] else CHARGE_KI)
-    elif action == "guard":
-        _restore_ki(fighter, GUARD_KI)
+        amount = CHARGE_KI_ASCENDED if fighter["ascended"] else CHARGE_KI
+        return _restore_ki(fighter, amount)
+    if action == "guard":
+        gained = _restore_ki(fighter, GUARD_KI)
         fighter["guarding"] = True
+        return gained
+    return 0
 
 
 SPREAD_MIN = 0.90
@@ -152,6 +162,56 @@ def _apply_attack(attacker: dict, defender: dict, action: str, rng) -> int:
     damage = compute_damage(attacker, defender, move["power"], spread)
     defender["hp"] = max(0, defender["hp"] - damage)
     return damage
+
+
+_ATTACK_VERBS = {
+    "strike": "strikes for",
+    "ki_blast": "fires a Ki Blast for",
+    "surge_beam": "unleashes a Surge Beam for",
+}
+
+
+def _entry_text(attacker: dict, defender: dict, action: str, damage: int, ki_gained: int) -> str:
+    """Render the sentence the client displays verbatim (§5.5).
+
+    The text is built here, once, so no client ever has to reassemble a fighter
+    name and a number into a sentence of its own.
+    """
+    if action in _ATTACK_VERBS:
+        return (
+            f"{attacker['name']} {_ATTACK_VERBS[action]} {damage}. "
+            f"{defender['name']}: {defender['hp']} HP."
+        )
+    if action == "charge":
+        return f"{attacker['name']} charges, recovering {ki_gained} ki."
+    if action == "guard":
+        return f"{attacker['name']} guards, recovering {ki_gained} ki."
+    return f"{attacker['name']} ascends, surging with power."
+
+
+def _log_entry(
+    turn: int,
+    actor: str,
+    action: str,
+    attacker: dict,
+    defender: dict,
+    damage: int,
+    ki_gained: int,
+) -> dict:
+    """Build one §5.5 log entry.
+
+    ``target_hp`` is always the hp of the *actor's* opponent once this entry has
+    resolved (A7) — for a non-attack it is that same value unchanged, since only
+    the actor's own attack can move it.
+    """
+    return {
+        "turn": turn,
+        "actor": actor,
+        "action": action,
+        "damage": damage,
+        "target_hp": defender["hp"],
+        "text": _entry_text(attacker, defender, action, damage, ki_gained),
+    }
 
 
 def resolve_turn(
@@ -188,23 +248,35 @@ def resolve_turn(
     for side in order:
         if actions[side] == "ascend":
             _apply_ascend(new_state[side])
-    for side in order:
-        _apply_support(new_state[side], actions[side])
+    ki_gained = {side: _apply_support(new_state[side], actions[side]) for side in order}
 
-    # Step 4: attacks in speed order. A KO stops resolution outright, so the
-    # slower fighter never swings back — which is what makes spd and burst
-    # damage worth paying for (§4.4).
+    # Step 6's counter is bumped before the entries are built so each carries the
+    # number of the turn it belongs to: the first resolved turn is 1 (§4.4).
+    turn = new_state["turn"] + 1
+    new_state["turn"] = turn
+
+    # Step 4: attacks in speed order, which is also the order entries are logged
+    # in (A7) even though the effects above already resolved. A KO stops
+    # resolution outright, so the slower fighter never swings back — which is
+    # what makes spd and burst damage worth paying for (§4.4).
     for side in order:
         attacker = new_state[side]
         defender = new_state[_OTHER_SIDE[side]]
-        if attacker["hp"] == 0:
-            break
-        if MOVES[actions[side]]["is_attack"]:
-            _apply_attack(attacker, defender, actions[side], rng)
+        action = actions[side]
+        is_attack = MOVES[action]["is_attack"]
+        if attacker["hp"] == 0 and is_attack:
+            # A8: only the attack is skipped. A fighter KO'd before its turn to
+            # swing still logs the Charge/Guard/Ascend it already resolved.
+            continue
+        damage = _apply_attack(attacker, defender, action, rng) if is_attack else 0
+        entries.append(
+            _log_entry(turn, side, action, attacker, defender, damage, ki_gained[side])
+        )
 
     # Step 5: Guard lasts exactly one turn (§4.3), so it is cleared on both
     # fighters whether or not it was ever used to halve anything.
     for side in ("player", "opponent"):
         new_state[side]["guarding"] = False
 
+    new_state["log"].extend(entries)
     return new_state, entries

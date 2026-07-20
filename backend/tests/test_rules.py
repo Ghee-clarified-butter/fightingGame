@@ -527,3 +527,142 @@ def test_a_turn_without_attacks_consumes_no_spread_draw():
     before = rng.getstate()
     resolve_turn(_match_with(), "charge", "guard", rng, order=("player", "opponent"))
     assert rng.getstate() == before
+
+
+# --- 1.9 log entries and the turn counter (§4.4 step 6, §5.5; A7, A8) --------
+
+
+ENTRY_KEYS = {"turn", "actor", "action", "damage", "target_hp", "text"}
+
+
+def test_first_resolved_turn_is_turn_one():
+    match = _match_with()
+    new_state, entries = resolve_turn(match, "strike", "charge", random.Random(1))
+    assert new_state["turn"] == 1
+    assert [entry["turn"] for entry in entries] == [1, 1]
+
+
+def test_every_entry_carries_the_spec_five_five_fields():
+    match = _match_with()
+    _, entries = resolve_turn(match, "ki_blast", "guard", random.Random(2))
+    for entry in entries:
+        assert set(entry) == ENTRY_KEYS
+        assert entry["actor"] in ("player", "opponent")
+
+
+def test_entries_are_appended_in_turn_order_not_effect_order():
+    """A7: the faster attacker is listed before the slower guard (§5.5)."""
+    match = _match_with()
+    _, entries = resolve_turn(match, "ki_blast", "guard", random.Random(2))
+    assert [(e["actor"], e["action"]) for e in entries] == [
+        ("player", "ki_blast"),
+        ("opponent", "guard"),
+    ]
+
+
+def test_a_slower_player_is_logged_second():
+    match = _match_with(opponent={"spd": 20})
+    _, entries = resolve_turn(match, "strike", "strike", random.Random(2))
+    assert [e["actor"] for e in entries] == ["opponent", "player"]
+
+
+def test_an_attack_entry_reports_the_damage_and_the_new_target_hp():
+    match = _match_with()
+    new_state, entries = resolve_turn(match, "strike", "charge", random.Random(7))
+    attack = entries[0]
+    expected = compute_damage(match["player"], match["opponent"], 14, _first_spread(7))
+    assert attack["damage"] == expected
+    assert attack["target_hp"] == 130 - expected == new_state["opponent"]["hp"]
+
+
+def test_a_guard_entry_has_zero_damage_and_an_unchanged_target_hp():
+    match = _match_with()
+    _, entries = resolve_turn(match, "guard", "guard", random.Random(1))
+    for entry in entries:
+        assert entry["damage"] == 0
+    assert entries[0]["target_hp"] == 130
+    assert entries[1]["target_hp"] == 100
+
+
+def test_entry_text_is_prerendered_for_every_move():
+    match = _match_with(player={"ki": 40}, opponent={"ki": 40})
+    texts = {}
+    for action in ACTION_ORDER:
+        _, entries = resolve_turn(match, action, "guard", random.Random(7))
+        texts[action] = entries[0]["text"]
+
+    assert texts["ki_blast"].startswith("Kaito fires a Ki Blast for ")
+    assert texts["ki_blast"].endswith(" HP.")
+    assert texts["strike"].startswith("Kaito strikes for ")
+    assert texts["surge_beam"].startswith("Kaito unleashes a Surge Beam for ")
+    assert texts["charge"] == "Kaito charges, recovering 25 ki."
+    assert texts["guard"] == "Kaito guards, recovering 8 ki."
+    assert texts["ascend"] == "Kaito ascends, surging with power."
+
+
+def test_the_guard_text_matches_the_spec_example():
+    match = _match_with()
+    _, entries = resolve_turn(match, "strike", "guard", random.Random(1))
+    assert entries[1]["text"] == "Vega guards, recovering 8 ki."
+
+
+def test_charge_text_quotes_the_ki_actually_gained_at_the_cap():
+    """A clamped Charge must not claim 25 ki it never restored (§4.2)."""
+    match = _match_with(player={"ki": 90})
+    _, entries = resolve_turn(match, "charge", "guard", random.Random(1))
+    assert entries[0]["text"] == "Kaito charges, recovering 10 ki."
+
+
+def test_an_ascended_charge_reports_thirty():
+    match = _match_with(player={"ascended": True, "ascend_used": True})
+    _, entries = resolve_turn(match, "charge", "guard", random.Random(1))
+    assert entries[0]["text"] == "Kaito charges, recovering 30 ki."
+
+
+def test_the_log_is_cumulative_and_oldest_first_across_three_turns():
+    state = _match_with()
+    rng = random.Random(11)
+    for _ in range(3):
+        state, _ = resolve_turn(state, "guard", "charge", rng)
+
+    assert state["turn"] == 3
+    assert [entry["turn"] for entry in state["log"]] == [1, 1, 2, 2, 3, 3]
+
+
+def test_returned_entries_are_exactly_this_turns_tail_of_the_log():
+    state = _match_with()
+    rng = random.Random(11)
+    state, _ = resolve_turn(state, "guard", "charge", rng)
+    state, entries = resolve_turn(state, "guard", "charge", rng)
+    assert state["log"][-len(entries):] == entries
+    assert len(state["log"]) == 4
+
+
+def test_a_kod_charger_still_logs_its_charge():
+    """A8: step 3 already resolved, so only the attack is lost."""
+    match = _match_with(opponent={"hp": 1})
+    new_state, entries = resolve_turn(match, "strike", "charge", random.Random(1))
+    assert new_state["opponent"]["hp"] == 0
+    assert [e["action"] for e in entries] == ["strike", "charge"]
+    assert entries[1]["target_hp"] == 100
+
+
+def test_a_kod_attacker_logs_nothing():
+    match = _match_with(opponent={"hp": 1})
+    new_state, entries = resolve_turn(match, "strike", "ki_blast", random.Random(1))
+    assert new_state["opponent"]["hp"] == 0
+    assert [e["actor"] for e in entries] == ["player"]
+
+
+def test_a_kod_attacker_pays_no_ki_for_the_attack_it_never_made():
+    match = _match_with(opponent={"hp": 1, "ki": 40})
+    new_state, _ = resolve_turn(match, "strike", "surge_beam", random.Random(1))
+    assert new_state["opponent"]["ki"] == 40
+
+
+def test_logging_a_turn_does_not_mutate_the_input_log():
+    match = _match_with()
+    before = copy.deepcopy(match)
+    new_state, _ = resolve_turn(match, "strike", "guard", random.Random(1))
+    assert match == before
+    assert new_state["log"] is not match["log"]

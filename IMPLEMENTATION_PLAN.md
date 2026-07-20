@@ -211,7 +211,7 @@ Not used: `flask-cors` (see A9), `requests`, any state/fetch library.
       faster fighter's attack drops the other to 0 shows the slower fighter never attacking; after
       Ascend, damage rises ~25% and `effective_spd` is +5.
 
-- [ ] **1.9 Log entries and turn counter.**
+- [x] **1.9 Log entries and turn counter.**
       Files: `backend/game/rules.py`, `backend/tests/test_rules.py`.
       Step 6: `turn` increments (first resolved turn → `1`, §4.4), and entries carry
       `turn`/`actor`/`action`/`damage`/`target_hp`/`text` per §5.5, appended in turn order per A7,
