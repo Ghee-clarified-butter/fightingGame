@@ -1,5 +1,8 @@
 CLAUDE_CODE_RUNBOOK.md
 
+# Local-only working notes (not part of the graded deliverable)
+docs/
+
 # Python
 __pycache__/
 *.py[cod]
