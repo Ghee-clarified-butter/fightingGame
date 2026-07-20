@@ -93,8 +93,16 @@ Cover:
 Also create the script/ files (setup, server, test, lint) so the stack in AGENTS.md runs.
 Do not implement game logic yet — spec and scripts only.
 
-# STEP 1 / STAGE 2 — REVIEW (manual)
-(pending)
+# STEP 1 / STAGE 2 — REVIEW (manual, interactive Claude Code session)
+
+okay, we can proceed to stage 2
+(approval to run Stage 2; the stage prompt executed was:)
+
+Act as a skeptical technical reviewer of specs/base.md. Check: are the damage and ki numbers
+balanced enough that no single move dominates and matches actually end? Is every move's edge case
+defined (guarding with 0 ki, beam with insufficient ki, ascending twice)? Is the resolve-turn
+contract unambiguous? Are the acceptance criteria testable and the test plan adequate?
+List concrete problems and, for each, edit specs/base.md to fix it. Do not implement game code.
 
 # STEP 1 / STAGE 3 — PLAN (loop)
 (pending)

@@ -51,6 +51,10 @@ backend owns all of it.
 Kaito hits harder and almost always acts first; Vega absorbs far more and wins long games. Neither
 is strictly better — see §4.5.
 
+**Mirror matches are legal.** `player_fighter` and `opponent_fighter` may be the same id; the two
+sides are independent copies of the template and share no state. Kaito-vs-Kaito is in fact the
+cleanest test of the `spd` tie-break rule (§4.4), so it must not be rejected.
+
 ---
 
 ## 3. Moves
@@ -127,6 +131,10 @@ So a turn resolves in this order:
 5. Clear `guarding` on both fighters.
 6. Increment turn counter, append log entries, check win condition.
 
+**Turn numbering.** A newly created match has `turn: 0` and an empty `log`. The first resolved turn
+sets `turn: 1`. So `turn` always equals the number of turns actually resolved, and the log entries
+for turn *n* carry `"turn": n`.
+
 ### 4.5 Balance intent (informative, not testable)
 
 Sustained damage per turn, Kaito attacking Vega, over a repeating cycle:
@@ -148,14 +156,42 @@ Expected match length is ~12–20 turns.
 - A fighter at 0 hp is knocked out; the other wins. `status` becomes `player_won` or `opponent_won`.
 - Because attacks resolve sequentially (§4.4), a double-KO is impossible.
 - **Turn cap: 100.** If turn 100 completes with both alive, the winner is whoever has the higher
-  remaining hp **as a fraction of `hp_max`** (fair across the 100/130 hp gap). If those fractions
-  are exactly equal, `status` becomes `draw`. The cap guarantees termination.
+  remaining hp **as a fraction of `hp_max`** (fair across the 100/130 hp gap). The cap guarantees
+  termination.
+
+  Compare the fractions by **integer cross-multiplication**, never by dividing:
+
+  ```
+  player_score   = player.hp   * opponent.hp_max
+  opponent_score = opponent.hp * player.hp_max
+  ```
+
+  Higher score wins; exactly equal is a `draw`. Comparing `hp/hp_max` as floats would make the
+  `draw` case depend on binary rounding and produce a test that passes or fails by luck.
 
 ### 4.7 Opponent (base game only)
 
 The opponent picks **uniformly at random from its currently legal moves**, drawn from the match RNG.
 It has no strategy — replacing it is the whole point of Step 2. It must never pick an illegal move,
 so a turn can never fail because of the opponent's choice.
+
+**The opponent's move is drawn only after the player's action has been validated.** Drawing it
+first would advance the RNG on a request that then returns 400, so a rejected turn would silently
+change future damage rolls — violating "a rejected turn does not mutate the match" (§5.4) in a way
+no state comparison would catch.
+
+### 4.8 RNG draw order
+
+The match owns a single seeded RNG. Determinism (§5.1) only holds if every implementation consumes
+it in the same order, so the order is fixed here:
+
+1. `spd` tie coin flip, **only** when effective speeds are equal.
+2. The opponent's random move choice (§4.7).
+3. Damage spread for the first attack to resolve.
+4. Damage spread for the second attack, if the defender survived to act.
+
+A draw is consumed only when the step actually occurs — no dummy draws. Two matches with the same
+seed and the same player actions therefore produce identical logs.
 
 ---
 
@@ -169,10 +205,12 @@ Request:
 ```json
 { "player_fighter": "kaito", "opponent_fighter": "vega", "seed": 12345 }
 ```
-`seed` is optional; when present the match RNG is seeded with it, making the whole match
-reproducible. This exists so tests can assert on exact damage numbers.
+`seed` is optional; when present it must be an **integer**, and the match RNG is seeded with it,
+making the whole match reproducible. This exists so tests can assert on exact damage numbers. A
+non-integer `seed` is rejected with `invalid_seed`. When absent, the server seeds randomly and does
+not report the seed back (Step 1 has no replay feature to need it).
 
-Response `201`: the **match state object** (§5.5).
+Response `201`: the **match state object** (§5.5), with `turn: 0` and an empty `log`.
 
 ### 5.2 `POST /api/match/<match_id>/turn` — submit a turn
 
@@ -199,13 +237,17 @@ Response `200`: the match state object. Read-only; safe to poll or reload.
 | Code | HTTP | When |
 |---|---|---|
 | `unknown_fighter` | 400 | `player_fighter` / `opponent_fighter` is not a known id |
-| `unknown_action` | 400 | `action` is not one of the six move ids |
+| `unknown_action` | 400 | `action` is not one of the six move ids, or `action` is missing |
+| `invalid_seed` | 400 | `seed` is present but not an integer |
 | `insufficient_ki` | 400 | Ki cost exceeds current ki |
 | `already_ascended` | 400 | Ascend chosen when `ascend_used` is true |
 | `match_over` | 409 | Turn submitted to a match whose `status` is not `in_progress` |
 | `match_not_found` | 404 | Unknown `match_id` |
 
-A rejected turn **does not mutate the match**. State after a 400 is byte-identical to state before.
+A rejected turn **does not mutate the match**. State after a 400 is byte-identical to state before,
+*and* the match RNG must be unadvanced — see §4.7. Testing this requires more than comparing the
+two state payloads: reject a turn, then play a legal turn, and assert the result matches what the
+same seed produces without the rejected attempt in between.
 
 ### 5.5 Match state object
 
@@ -235,7 +277,12 @@ A rejected turn **does not mutate the match**. State after a 400 is byte-identic
 
 `legal_actions` is computed server-side for the **player**, so the UI can disable buttons without
 duplicating rule logic. This is the one piece of rule knowledge the client is allowed to consume —
-and it consumes it as data, not as reimplemented logic.
+and it consumes it as data, not as reimplemented logic. It is **empty** whenever `status` is not
+`in_progress`, so a finished match cannot present a playable button.
+
+`guarding` is always `false` in a returned state, because Guard is set and cleared inside a single
+turn's resolution (§4.3). It appears in the payload only so the fighter shape stays identical
+everywhere; the client must not key any behavior off it.
 
 `log` is append-only and cumulative for the whole match, oldest first. Each entry carries both
 structured fields and a prerendered `text` so the client does no sentence-building.
@@ -250,8 +297,15 @@ structured fields and a prerendered `text` so the client does no sentence-buildi
 - Fighter definitions live in `backend/game/fighters.py`.
 - HTTP layer in `backend/app.py` does validation → call rules → serialize. No rules in the routes.
 - Step 1 stores matches **in memory** (a dict keyed by `match_id`). Persistence arrives in Step 2.
+  `match_id` is a UUID4 hex string. Unknown ids return 404 rather than being created on demand.
 - Frontend: React 18 + TypeScript + Vite + Tailwind. Components render `MatchState`; a single typed
   API module owns all `fetch` calls.
+- **Cross-origin access must be solved explicitly.** The client runs on `:5173` and the API on
+  `:5000`, so every request is cross-origin and will be blocked by the browser unless handled.
+  Use a Vite dev-server proxy (`/api` → `http://localhost:5000`) so the browser sees a same-origin
+  request; the frontend then calls relative `/api/...` paths and needs no base URL. If a proxy is
+  not used, the backend must enable CORS for the Vite origin instead. Either way this is a
+  requirement, not an implementation detail — without it the UI cannot talk to the server at all.
 
 ---
 
@@ -270,9 +324,13 @@ structured fields and a prerendered `text` so the client does no sentence-buildi
 
 A reviewer can verify each of these directly.
 
-- [ ] `POST /api/match` returns 201 and a state with both fighters at full hp and 30 ki.
+- [ ] `POST /api/match` returns 201 and a state with both fighters at full hp and 30 ki,
+      `turn: 0`, and an empty `log`.
 - [ ] Two matches created with the same `seed` and given the same action sequence produce
       **identical** logs and final states.
+- [ ] A rejected (400) turn does not advance the RNG: reject-then-play yields the same result as
+      play alone, at the same seed.
+- [ ] A mirror match (`kaito` vs `kaito`) is accepted and playable to a conclusion.
 - [ ] `POST /api/match/<id>/turn` with `strike` reduces opponent hp by ≥1 and appends ≥1 log entry.
 - [ ] Ki Blast deducts exactly 15 ki; Surge Beam exactly 40; Strike, Charge and Guard deduct 0.
 - [ ] Charge raises ki by exactly 25 (30 ascended) and never above `ki_max`.
@@ -286,10 +344,13 @@ A reviewer can verify each of these directly.
 - [ ] When a fighter reaches 0 hp, `status` changes and the slower fighter does not act that turn.
 - [ ] Submitting a turn to a finished match returns 409 `match_over`.
 - [ ] A match forced to turn 100 ends with a winner by hp fraction, or `draw` when exactly equal.
-- [ ] `legal_actions` always matches what the rules would actually accept.
+- [ ] `legal_actions` always matches what the rules would actually accept, and is empty once
+      `status` is not `in_progress`.
 - [ ] The opponent never selects an illegal move across 1000 simulated random matches.
-- [ ] Every simulated random match terminates within 100 turns.
-- [ ] The frontend plays a full match to a win screen without a page reload.
+- [ ] Every simulated random match terminates within 100 turns, and **at least 95% end by KO
+      rather than by hitting the cap** — the cap is a safety net, not the normal ending.
+- [ ] The frontend plays a full match to a win screen without a page reload, served through the
+      configured proxy (§6) with no CORS errors in the console.
 - [ ] `./script/test` passes with zero failures.
 
 ---
@@ -302,16 +363,19 @@ A reviewer can verify each of these directly.
 - Guard halving, including the slower-defender case; `guarding` cleared after the turn.
 - Ascend: multiplier, `spd` +5, `ascend_used` latching, rejection of a second Ascend.
 - Turn order by `spd`, the tie coin flip, and the KO-stops-resolution rule.
-- Turn cap: a match forced to 100 turns resolves by hp fraction, and the equal case is a `draw`.
+- Turn cap: a match forced to 100 turns resolves by cross-multiplied hp comparison, including a
+  constructed exactly-equal case that must yield `draw`.
 - `resolve_turn` does not mutate its input state.
 - **Property/fuzz:** 1000 seeded random-vs-random matches — every one terminates within 100 turns,
-  hp and ki stay in range, and no illegal action is ever chosen.
+  ≥95% end by KO, hp and ki stay within `[0, max]`, and no illegal action is ever chosen.
 
 **API — `backend/tests/test_api.py`** (Flask test client):
 - Each endpoint's happy path and response shape.
 - Every error code in §5.4, each asserting state is unchanged afterwards.
 - Determinism: same seed + same actions ⇒ identical final state and log.
-- `legal_actions` agrees with the rules layer across a played-out match.
+- RNG is not advanced by a rejected turn (the reject-then-play comparison from §5.4).
+- A mirror match is accepted.
+- `legal_actions` agrees with the rules layer across a played-out match, and empties on finish.
 
 **Frontend — Vitest**:
 - Bars render the right widths/values for a given `MatchState`.
@@ -319,3 +383,33 @@ A reviewer can verify each of these directly.
 - The log renders entries oldest-first from `text`.
 - The win screen appears when `status` leaves `in_progress`.
 - Buttons are disabled while a request is in flight.
+
+---
+
+## 10. Review log (Step 1 / Stage 2)
+
+A skeptical pass over §1–§9. Nine defects found; each is fixed above.
+
+| # | Problem | Severity | Fix |
+|---|---|---|---|
+| 1 | The opponent's random move was drawn before the player's action was validated, so a turn rejected with 400 still advanced the match RNG. "A rejected turn does not mutate the match" was therefore false in a way comparing state payloads could never detect — an invalid request silently changed all future damage rolls. | **High** | §4.7: the opponent's move is drawn only after validation. §5.4 adds the reject-then-play test that can actually catch it. |
+| 2 | Nothing solved cross-origin access. The client is served from `:5173` and the API from `:5000`; the browser blocks that by default. Every endpoint could be correct and the game still wouldn't work. | **High** | §6 requires a Vite `/api` proxy (or backend CORS), and the acceptance criteria require a clean console. |
+| 3 | Determinism was promised but the RNG consumption order was never fixed. Two correct-looking implementations could disagree on damage at the same seed, making the determinism criterion untestable across a refactor. | **High** | New §4.8 fixes the draw order and forbids dummy draws. |
+| 4 | The turn-cap tie compared `hp/hp_max` as floats, so the `draw` case hinged on binary rounding — a test that passes or fails by luck. | Medium | §4.6 switches to integer cross-multiplication. |
+| 5 | `turn` was never given a starting value; the example showed `turn: 3` with no way to know whether a fresh match is 0 or 1, and the cap's meaning depended on the answer. | Medium | §4.4 defines `turn: 0` at creation. |
+| 6 | `legal_actions` was undefined for a finished match, so a client could render live buttons on a won game. | Medium | §5.5: empty unless `status` is `in_progress`. |
+| 7 | "Every simulated match terminates within 100 turns" is trivially satisfied by the cap itself — it would pass even if the game could never produce a KO. | Medium | §8/§9 additionally require ≥95% of fuzz matches to end by KO. |
+| 8 | Mirror matches were neither permitted nor forbidden, leaving the `spd` tie-break — the rule most in need of testing — potentially unreachable. | Low | §2.1 explicitly permits them; §8 adds a criterion. |
+| 9 | `guarding` is exposed in the API but, being set and cleared inside one turn, is always `false` to a client — an invitation to build UI on a field that never changes. | Low | §5.5 documents it as always false and off-limits for client behavior. |
+
+### Checked and found sound
+
+- **No dominant move.** Ki Blast ≈10.6, Surge Beam ≈9.8, Strike ≈8.6 damage/turn sustained; Surge
+  Beam trades DPS for burst, which is the intended shape.
+- **Matches end.** Turtling is not viable: guarding every turn still concedes ~8.5 damage/turn to
+  Vega, killing Kaito in ~12 turns while dealing nothing. The cap is a backstop, not the norm.
+- **Edge cases already covered.** Guard at 0 ki (legal, no cost), Surge Beam with insufficient ki
+  (400, no downgrade), Ascend twice (400), ki clamping at `ki_max`, and the `max(1, …)` damage
+  floor were all specified and survive review unchanged.
+- **Double-KO is impossible** by construction, since attacks resolve sequentially — so `draw` has
+  exactly one cause (the cap), which keeps the status enum honest.
