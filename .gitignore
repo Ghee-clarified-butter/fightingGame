@@ -15,6 +15,7 @@ venv/
 node_modules/
 dist/
 .vite/
+*.tsbuildinfo
 
 # DB (Step 2)
 *.db

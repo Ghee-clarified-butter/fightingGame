@@ -124,7 +124,7 @@ Not used: `flask-cors` (see A9), `requests`, any state/fetch library.
       Test: `test_imports.py` asserts `import game` succeeds and that `sys.path` resolution works.
       Done when `./script/test` passes (frontend half still skips) and `./script/lint` is clean.
 
-- [ ] **0.2 Frontend scaffold and a green vitest run.**
+- [x] **0.2 Frontend scaffold and a green vitest run.**
       Files: `frontend/package.json`, `frontend/tsconfig.json`, `frontend/tsconfig.node.json`,
       `frontend/vite.config.ts`, `frontend/index.html`, `frontend/src/main.tsx`,
       `frontend/src/App.tsx`, `frontend/src/index.css`, `frontend/src/setupTests.ts`,
