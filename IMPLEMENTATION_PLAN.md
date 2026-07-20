@@ -231,7 +231,7 @@ Not used: `flask-cors` (see A9), `requests`, any state/fetch library.
       (e.g. Kaito 50/100 vs Vega 65/130 → 6500 == 6500) yields `draw`; the comparison is asserted to
       use integers.
 
-- [ ] **1.11 `resolve_turn` does not mutate its input.**
+- [x] **1.11 `resolve_turn` does not mutate its input.**
       Files: `backend/tests/test_rules.py` (test only — fix `rules.py` if it fails).
       Test: deep-copy a state, call `resolve_turn`, assert the original is `==` to its copy and that
       the returned state is a different object (§6, §9).

@@ -763,3 +763,68 @@ def test_check_status_does_not_mutate_the_state():
     before = copy.deepcopy(match)
     check_status(match)
     assert match == before
+
+
+# --- 1.11 resolve_turn does not mutate its input (§6, §9) --------------------
+#
+# The HTTP layer keeps the stored match and swaps it out only once resolution
+# succeeds (§5.4), so a caller that drops the result must still hold exactly
+# what it passed in — including after a turn that KOs, ascends or guards.
+
+
+_NON_MUTATION_CASES = (
+    ("strike", "strike"),
+    ("charge", "guard"),
+    ("ascend", "surge_beam"),
+    ("guard", "ki_blast"),
+)
+
+
+def test_resolve_turn_leaves_its_input_state_untouched():
+    for player_action, opponent_action in _NON_MUTATION_CASES:
+        match = _match_with(player={"ki": 100}, opponent={"ki": 100})
+        before = copy.deepcopy(match)
+        resolve_turn(match, player_action, opponent_action, random.Random(7))
+        assert match == before
+
+
+def test_resolve_turn_returns_a_new_state_object():
+    match = _match_with()
+    new_state, _ = resolve_turn(match, "strike", "strike", random.Random(7))
+    assert new_state is not match
+    assert new_state["player"] is not match["player"]
+    assert new_state["opponent"] is not match["opponent"]
+    assert new_state["log"] is not match["log"]
+
+
+def test_the_input_log_does_not_grow():
+    """§5.5's log is cumulative on the state the caller keeps, not on the one
+    it handed over — so a rejected turn cannot leave a stray entry behind."""
+    match = _match_with()
+    for _ in range(3):
+        match, _ = resolve_turn(match, "strike", "strike", random.Random(7))
+    stored = copy.deepcopy(match)
+    new_state, entries = resolve_turn(match, "strike", "strike", random.Random(7))
+    assert match["log"] == stored["log"]
+    assert len(new_state["log"]) == len(match["log"]) + len(entries)
+
+
+def test_a_ko_turn_does_not_mutate_its_input():
+    """The one path that ends the match: status and hp move on the copy only."""
+    match = _match_with(opponent={"hp": 1})
+    before = copy.deepcopy(match)
+    new_state, _ = resolve_turn(match, "strike", "strike", random.Random(7))
+    assert new_state["status"] == "player_won"
+    assert match == before
+    assert match["status"] == "in_progress"
+
+
+def test_mutating_the_returned_state_cannot_reach_the_input():
+    """Deep, not shallow: the fighters and the log are copies too."""
+    match = _match_with()
+    before = copy.deepcopy(match)
+    new_state, _ = resolve_turn(match, "charge", "charge", random.Random(7))
+    new_state["player"]["hp"] = 1
+    new_state["opponent"]["ascended"] = True
+    new_state["log"].clear()
+    assert match == before
