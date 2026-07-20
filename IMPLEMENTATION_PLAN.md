@@ -148,7 +148,7 @@ Not used: `flask-cors` (see A9), `requests`, any state/fetch library.
       `==` but not `is`, and mutating one does not touch the other (mirror-match independence, §2.1);
       unknown id raises.
 
-- [ ] **1.2 Move table and ki costs.**
+- [x] **1.2 Move table and ki costs.**
       Files: `backend/game/moves.py`, `backend/tests/test_moves.py`.
       `MOVES` keyed by the six action ids, each with `cost`, `power` (`None` for non-attacks),
       `name`, and `is_attack`. `ACTION_ORDER` is the canonical list from A4.
