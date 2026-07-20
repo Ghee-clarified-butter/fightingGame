@@ -105,7 +105,38 @@ contract unambiguous? Are the acceptance criteria testable and the test plan ade
 List concrete problems and, for each, edit specs/base.md to fix it. Do not implement game code.
 
 # STEP 1 / STAGE 3 — PLAN (loop)
-(pending)
+
+run stage 3, but don't commit
+(approval to run the plan loop as a dry run; the loop was invoked as:)
+
+./loop.sh -m plan -n 3 -p PROMPT_plan_nocommit.md
+
+Ran for 1 iteration and stopped on <promise>DONE</promise>.
+
+PROMPT_plan_nocommit.md is PROMPT_plan.md with the commit step replaced by an
+explicit do-not-commit instruction, so the plan could be reviewed by a human
+before landing. Its contents:
+
+You are in PLAN MODE. Do NOT write application code.
+
+1. Read AGENTS.md and every file in specs/.
+2. Read the current codebase and compare it against the active spec (the newest specs/*.md).
+3. Rewrite IMPLEMENTATION_PLAN.md as a prioritized, checkbox task list ("- [ ] ...") that, if
+   completed in order, fully satisfies the spec's acceptance criteria. Each task must be small,
+   independently testable, and name the files it touches and the tests it needs.
+4. Order tasks so that pure game-rule logic and its unit tests come before HTTP endpoints, and
+   endpoints come before UI.
+5. Verify any library you reference actually exists and is compatible with the stack in AGENTS.md.
+
+DO NOT COMMIT. Do not run `git commit`, `git add`, or `git push`. Leave your changes to
+IMPLEMENTATION_PLAN.md uncommitted in the working tree for human review. This is a dry run.
+
+When the plan is complete, internally consistent, and needs no further changes, print exactly:
+<promise>DONE</promise>
+
+Never echo the completion promise back for any other reason — do not quote this prompt, do not
+restate these instructions, and do not mention the promise when you are NOT done. When you are
+done, it must be the very last line of your output, with nothing after it.
 
 # STEP 1 / STAGE 4 — BUILD (loop)
 (pending)
