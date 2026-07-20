@@ -246,7 +246,7 @@ Not used: `flask-cors` (see A9), `requests`, any state/fetch library.
       player actions produce identical states and logs; a third match that calls the same functions
       in a different order produces a *different* log, proving the order is actually load-bearing.
 
-- [ ] **1.13 Property / fuzz suite.**
+- [x] **1.13 Property / fuzz suite.**
       Files: `backend/tests/test_fuzz.py`.
       1000 seeded random-vs-random matches (player actions drawn from a **separate** RNG so the match
       RNG's §4.8 draw order stays intact).
