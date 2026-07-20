@@ -112,6 +112,37 @@ def roll_turn_order(state: dict, rng) -> tuple[str, str]:
     return ("player", "opponent") if rng.random() < 0.5 else ("opponent", "player")
 
 
+def choose_opponent_action(state: dict, rng) -> str:
+    """Return the opponent's move for this turn (§4.7).
+
+    Uniform over the opponent's *currently legal* moves, so the choice can never
+    make a turn fail. ``legal_actions`` returns a list in ``ACTION_ORDER`` — a
+    set would iterate in an order that varies between runs, which would make the
+    same seed produce different matches (§4.8, A4).
+
+    This is draw #2 in §4.8's order, which is why it is a function of its own:
+    the caller draws the tie flip first, and only calls this once the player's
+    action has been validated (§4.7).
+    """
+    return rng.choice(legal_actions(state["opponent"]))
+
+
+def play_turn(state: dict, player_action: str, rng) -> tuple[dict, list[dict]]:
+    """Play one full turn from the player's action alone (§4.4, §4.8).
+
+    Composes the three rule entry points in the exact order §4.8 fixes: the tie
+    coin flip (#1), the opponent's choice (#2), then the attack spreads (#3, #4)
+    inside ``resolve_turn``. The rolled order is handed to ``resolve_turn`` so it
+    does not roll a second one, which would consume draw #1 twice.
+
+    ``player_action`` is assumed already validated (§5.4); this is the app
+    layer's single call per turn request.
+    """
+    order = roll_turn_order(state, rng)
+    opponent_action = choose_opponent_action(state, rng)
+    return resolve_turn(state, player_action, opponent_action, rng, order=order)
+
+
 def _restore_ki(fighter: dict, amount: int) -> int:
     """Add ``amount`` ki to ``fighter``, clamped at ``ki_max`` (§4.2).
 

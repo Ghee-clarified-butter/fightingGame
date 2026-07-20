@@ -236,7 +236,7 @@ Not used: `flask-cors` (see A9), `requests`, any state/fetch library.
       Test: deep-copy a state, call `resolve_turn`, assert the original is `==` to its copy and that
       the returned state is a different object (§6, §9).
 
-- [ ] **1.12 Opponent choice and the §4.8 draw order.**
+- [x] **1.12 Opponent choice and the §4.8 draw order.**
       Files: `backend/game/rules.py`, `backend/tests/test_rules.py`.
       `choose_opponent_action(state, rng)` per §4.7 + A4: uniform over the opponent's *legal* moves,
       drawn from the match RNG, never illegal. Add `play_turn(state, player_action, rng)` composing

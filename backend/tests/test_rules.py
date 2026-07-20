@@ -10,10 +10,12 @@ from game.moves import ACTION_ORDER
 from game.rules import (
     TURN_CAP,
     check_status,
+    choose_opponent_action,
     compute_damage,
     effective_spd,
     legal_actions,
     new_match,
+    play_turn,
     resolve_turn,
     roll_turn_order,
 )
@@ -828,3 +830,113 @@ def test_mutating_the_returned_state_cannot_reach_the_input():
     new_state["opponent"]["ascended"] = True
     new_state["log"].clear()
     assert match == before
+
+
+def test_opponent_choice_is_always_legal_at_zero_ki():
+    """§4.7: the opponent can never pick a move it cannot pay for."""
+    match = _match_with(opponent={"ki": 0})
+    rng = random.Random(3)
+    drawn = {choose_opponent_action(match, rng) for _ in range(200)}
+    assert drawn == {"strike", "charge", "guard"}
+
+
+def test_opponent_never_ascends_twice():
+    match = _match_with(opponent={"ki": 100, "ascend_used": True, "ascended": True})
+    rng = random.Random(4)
+    drawn = {choose_opponent_action(match, rng) for _ in range(200)}
+    assert "ascend" not in drawn
+    assert drawn == {"strike", "ki_blast", "surge_beam", "charge", "guard"}
+
+
+def test_opponent_choice_reaches_every_legal_move():
+    """Uniform over the legal set, not a fixed favourite (§4.7)."""
+    match = _match_with(opponent={"ki": 100})
+    rng = random.Random(5)
+    drawn = {choose_opponent_action(match, rng) for _ in range(400)}
+    assert drawn == set(ACTION_ORDER)
+
+
+def test_opponent_choice_is_one_choice_over_the_ordered_legal_list():
+    """A4 pins the method, not just the distribution.
+
+    ``rng.choice`` consumes a number of raw draws that depends on the length of
+    the list it is given, so an implementation that drew over, say, all six
+    moves and retried would leave the RNG somewhere else — and every later
+    damage spread with it. Replaying the pinned call must land on the same
+    state, which also fixes the list as ``ACTION_ORDER``-ordered.
+    """
+    match = _match_with()
+    rng = random.Random(6)
+    probe = random.Random(6)
+    chosen = choose_opponent_action(match, rng)
+    expected = probe.choice(["strike", "ki_blast", "charge", "guard"])
+    assert chosen == expected
+    assert rng.getstate() == probe.getstate()
+
+
+def _play_out(seed: int, player_actions: list[str], opponent_id: str = "vega") -> dict:
+    """Play the given player actions from a fresh match at ``seed``."""
+    state = new_match("kaito", opponent_id)
+    rng = random.Random(seed)
+    for action in player_actions:
+        state, _ = play_turn(state, action, rng)
+    return state
+
+
+_SEQUENCE = ["strike", "charge", "guard", "strike", "ki_blast", "strike"]
+
+
+def test_same_seed_and_actions_give_identical_matches():
+    """§4.8's whole point: the seed plus the player's actions fix the match."""
+    first = _play_out(11, _SEQUENCE)
+    second = _play_out(11, _SEQUENCE)
+    assert first == second
+    assert [e["text"] for e in first["log"]] == [e["text"] for e in second["log"]]
+
+
+def test_different_seeds_give_different_matches():
+    """Guards the test above against passing because the RNG is unused."""
+    assert _play_out(11, _SEQUENCE) != _play_out(12, _SEQUENCE)
+
+
+def test_play_turn_matches_the_hand_composed_call():
+    """``play_turn`` is exactly flip then choose then resolve, on one RNG."""
+    match = new_match("kaito", "kaito")
+    composed_rng = random.Random(21)
+    order = roll_turn_order(match, composed_rng)
+    opponent_action = choose_opponent_action(match, composed_rng)
+    expected, _ = resolve_turn(match, "strike", opponent_action, composed_rng, order=order)
+    actual, _ = play_turn(match, "strike", random.Random(21))
+    assert actual == expected
+
+
+def test_the_draw_order_is_load_bearing():
+    """Swapping draws #1 and #2 changes the match, so §4.8's order is real.
+
+    A mirror match is required: kaito (14) vs vega (9) never ties, so the coin
+    flip is never drawn and the two orders would be indistinguishable.
+    """
+    correct = new_match("kaito", "kaito")
+    correct_rng = random.Random(31)
+
+    swapped = new_match("kaito", "kaito")
+    swapped_rng = random.Random(31)
+
+    for action in _SEQUENCE:
+        correct, _ = play_turn(correct, action, correct_rng)
+
+        # Draw #2 before draw #1 — the ordering §4.8 exists to rule out.
+        opponent_action = choose_opponent_action(swapped, swapped_rng)
+        order = roll_turn_order(swapped, swapped_rng)
+        swapped, _ = resolve_turn(swapped, action, opponent_action, swapped_rng, order=order)
+
+    assert [e["text"] for e in correct["log"]] != [e["text"] for e in swapped["log"]]
+
+
+def test_play_turn_does_not_mutate_its_input():
+    match = new_match("kaito", "vega")
+    before = copy.deepcopy(match)
+    new_state, entries = play_turn(match, "strike", random.Random(41))
+    assert match == before
+    assert new_state["turn"] == 1
+    assert new_state["log"] == entries
