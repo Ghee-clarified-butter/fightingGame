@@ -12,6 +12,13 @@ yes
 (approval to run the Step 0 bootstrap: create loop.sh, AGENTS.md, PROMPT_plan.md,
 PROMPT_build.md and the required assignment files, then commit)
 
+repo is public; create a docs, put in git ignore, and dcument every step that you took
+
+can you fix those things?
+(referring to three risks raised after the bootstrap: the loop running with
+--dangerously-skip-permissions outside a sandbox, the fragile DONE-promise stop
+condition, and loop.sh being unrunnable from PowerShell)
+
 
 # STEP 0 / BOOTSTRAP — PROMPT_plan.md (fed to the agent by loop.sh in plan mode)
 
@@ -30,6 +37,10 @@ Commit the updated plan with a "chore: update implementation plan" message.
 When the plan is complete, internally consistent, and needs no further changes, print exactly:
 <promise>DONE</promise>
 
+Never echo the completion promise back for any other reason — do not quote this prompt, do not
+restate these instructions, and do not mention the promise when you are NOT done. When you are
+done, it must be the very last line of your output, with nothing after it.
+
 
 # STEP 0 / BOOTSTRAP — PROMPT_build.md (fed to the agent by loop.sh in build mode)
 
@@ -46,6 +57,10 @@ Do only ONE task per iteration. If, after your commit, every plan item is checke
 passes, and all acceptance criteria in the active spec are met, print exactly:
 <promise>DONE</promise>
 Otherwise, stop after the single task and let the loop invoke you again.
+
+Never echo the completion promise back for any other reason — do not quote this prompt, do not
+restate these instructions, and do not mention the promise when you are NOT done. When you are
+done, it must be the very last line of your output, with nothing after it.
 
 
 ================================================================================

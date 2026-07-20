@@ -11,3 +11,7 @@ Do only ONE task per iteration. If, after your commit, every plan item is checke
 passes, and all acceptance criteria in the active spec are met, print exactly:
 <promise>DONE</promise>
 Otherwise, stop after the single task and let the loop invoke you again.
+
+Never echo the completion promise back for any other reason — do not quote this prompt, do not
+restate these instructions, and do not mention the promise when you are NOT done. When you are
+done, it must be the very last line of your output, with nothing after it.

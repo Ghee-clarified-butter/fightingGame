@@ -12,3 +12,7 @@ You are in PLAN MODE. Do NOT write application code.
 Commit the updated plan with a "chore: update implementation plan" message.
 When the plan is complete, internally consistent, and needs no further changes, print exactly:
 <promise>DONE</promise>
+
+Never echo the completion promise back for any other reason — do not quote this prompt, do not
+restate these instructions, and do not mention the promise when you are NOT done. When you are
+done, it must be the very last line of your output, with nothing after it.
