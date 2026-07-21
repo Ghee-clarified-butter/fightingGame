@@ -6,7 +6,7 @@ import uuid
 import pytest
 
 from app import create_app, serialize
-from game import rules
+from game import ai, rules
 
 # The §5.5 payload, key for key. Written out literally rather than derived from
 # the code so a field that quietly appears or disappears fails a test.
@@ -699,7 +699,7 @@ def test_the_route_resolves_the_turn_the_rules_would(client):
     expected = rules.new_match("kaito", "vega")
     rng = random.Random(808)
     for action in ("strike", "charge", "ki_blast", "guard"):
-        expected, _ = rules.play_turn(expected, action, rng)
+        expected, _ = ai.play_turn(expected, action, rng)
         state = api.post(f"/api/match/{match_id}/turn", json={"action": action}).get_json()
         assert state["player"] == expected["player"]
         assert state["opponent"] == expected["opponent"]

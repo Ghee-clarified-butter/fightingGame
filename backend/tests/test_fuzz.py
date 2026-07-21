@@ -14,26 +14,31 @@ Two RNGs, deliberately:
 Sharing one RNG would interleave the driver's draws with the match's and make
 the fuzz runs unreproducible against anything else in the suite.
 
-The driver calls ``roll_turn_order`` → ``choose_opponent_action`` →
-``resolve_turn`` rather than ``play_turn`` for one reason: it needs to *see* the
-opponent's move to assert it was legal. ``test_driver_matches_play_turn`` pins
-the two paths together so this is not a second, divergent implementation.
+The driver calls ``roll_turn_order`` → ``ai.choose_action`` → ``resolve_turn``
+rather than ``ai.play_turn`` for one reason: it needs to *see* the opponent's
+move to assert it was legal. ``test_driver_matches_play_turn`` pins the two paths
+together so this is not a second, divergent implementation.
+
+Move selection lives in ``game.ai`` since extension B1, so the driver asks for
+the ``random`` policy explicitly — which is what these matches were always
+playing. E2.1's streak cap binds it too, so an opponent that has charged or
+guarded twice running now attacks; that shifts which move a given seed draws
+without weakening a single invariant below (B3).
 """
 
 import random
 
 import pytest
 
+from game.ai import choose_action, play_turn
 from game.rules import (
     STATUS_DRAW,
     STATUS_IN_PROGRESS,
     STATUS_OPPONENT_WON,
     STATUS_PLAYER_WON,
     TURN_CAP,
-    choose_opponent_action,
     legal_actions,
     new_match,
-    play_turn,
     resolve_turn,
     roll_turn_order,
 )
@@ -69,7 +74,7 @@ def _play_match(seed: int, player_id: str, opponent_id: str) -> dict:
         player_action = driver_rng.choice(player_legal)
 
         order = roll_turn_order(state, match_rng)
-        opponent_action = choose_opponent_action(state, match_rng)
+        opponent_action = choose_action(state, "opponent", "random", match_rng)
         assert opponent_action in opponent_legal, (opponent_action, opponent_legal)
 
         state, entries = resolve_turn(
@@ -174,7 +179,7 @@ def test_driver_matches_play_turn():
         player_action = driver_rng.choice(legal_actions(composed["player"]))
 
         order = roll_turn_order(composed, composed_rng)
-        opponent_action = choose_opponent_action(composed, composed_rng)
+        opponent_action = choose_action(composed, "opponent", "random", composed_rng)
         composed, _ = resolve_turn(
             composed, player_action, opponent_action, composed_rng, order=order
         )

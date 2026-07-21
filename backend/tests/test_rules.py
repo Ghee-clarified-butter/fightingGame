@@ -1,25 +1,40 @@
-"""Tests for the pure game rules (spec §4)."""
+"""Tests for the pure game rules (spec §4).
+
+``play_turn`` and the opponent's move choice moved to ``game.ai`` (extension
+B1); the tests that pin the turn composition and the §4.8 draw order stay here,
+because what they assert is a rules contract, and are simply repointed.
+``choose_opponent_action`` is now ``ai.choose_action(state, side, difficulty)``.
+"""
 
 import copy
 import random
 
 import pytest
 
+from game.ai import choose_action, play_turn
 from game.fighters import UnknownFighterError, new_fighter
 from game.moves import ACTION_ORDER
 from game.rules import (
     TURN_CAP,
     check_status,
-    choose_opponent_action,
     compute_damage,
     deterministic_order,
     effective_spd,
     legal_actions,
     new_match,
-    play_turn,
     resolve_turn,
     roll_turn_order,
 )
+
+
+def choose_opponent_action(state: dict, rng) -> str:
+    """The Step 1 chooser, spelled in the new signature.
+
+    These tests assert §4.7's uniform-over-legal-moves contract, which is now
+    the ``random`` policy, so pinning the side and the difficulty here keeps
+    them asserting exactly what they asserted before the move (B1).
+    """
+    return choose_action(state, "opponent", "random", rng)
 
 
 def test_fresh_match_has_the_spec_shape():

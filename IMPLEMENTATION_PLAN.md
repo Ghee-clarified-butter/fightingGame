@@ -192,7 +192,7 @@ installed is the whole stack.
 
 ### 2. AI policies (pure logic, no HTTP)
 
-- [ ] **2.1 — Create `backend/game/ai.py`: move `play_turn`/`choose_opponent_action`, add the
+- [x] **2.1 — Create `backend/game/ai.py`: move `play_turn`/`choose_opponent_action`, add the
   difficulty dispatch and the streak cap.**
   Files: new `backend/game/ai.py` (`DIFFICULTIES = ("random", "heuristic", "search")`,
   `UnknownDifficultyError`, `attacking_candidates(fighter, actions)` implementing E2.1, the `random`

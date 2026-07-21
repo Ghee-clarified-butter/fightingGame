@@ -14,7 +14,7 @@ import uuid
 
 from flask import Flask, jsonify, request
 
-from game import rules
+from game import ai, rules
 from game.fighters import UnknownFighterError
 from game.moves import MOVES
 
@@ -163,9 +163,10 @@ def create_app() -> Flask:
         if error is not None:
             return error
 
-        # ``play_turn`` draws the opponent's move itself, and only after this
-        # point — so a turn rejected above never advances the match RNG (§4.7).
-        state, _ = rules.play_turn(match["state"], action, match["rng"])
+        # ``ai.play_turn`` picks the opponent's move itself, from the difficulty
+        # stored on the state, and only after this point — so a turn rejected
+        # above never advances the match RNG (§4.7, E3.4).
+        state, _ = ai.play_turn(match["state"], action, match["rng"])
         # The state is replaced rather than mutated in place: ``resolve_turn``
         # works on a copy (§6), so the store only adopts the new one once the
         # whole turn resolved without raising.
