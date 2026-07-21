@@ -205,7 +205,7 @@ installed is the whole stack.
   consumes exactly one `rng.choice` draw whether or not the cap filtered the list.
   Also confirm per B3 which (if any) Step 1 seeded expectations moved, and re-derive them.
 
-- [ ] **2.2 — Implement the heuristic policy (E2 rules 1–7).**
+- [x] **2.2 — Implement the heuristic policy (E2 rules 1–7).**
   Files: `backend/game/ai.py`.
   Tests: `backend/tests/test_ai.py` — one test per rule on a crafted state where exactly that rule
   fires, each paired with a state where its guard is *just* unmet so the next rule fires instead:

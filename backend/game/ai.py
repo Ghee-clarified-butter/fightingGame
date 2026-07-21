@@ -14,8 +14,8 @@ Nothing here imports anything that imports this module, so there is no cycle:
 ``ai`` → ``rules`` → ``fighters``/``moves``, one direction only.
 """
 
-from game.moves import MOVES
-from game.rules import legal_actions, resolve_turn, roll_turn_order
+from game.moves import ACTION_ORDER, MOVES
+from game.rules import compute_damage, legal_actions, resolve_turn, roll_turn_order
 
 
 class UnknownDifficultyError(ValueError):
@@ -75,11 +75,139 @@ def _choose_random(state: dict, side: dict, rng) -> str:
     return rng.choice(attacking_candidates(fighter, legal_actions(fighter)))
 
 
+#: The side each side faces. ``rules`` keeps its own copy of this mapping; policy
+#: and arithmetic are separate modules and neither imports the other's privates.
+_FOE = {"player": "opponent", "opponent": "player"}
+
+#: The worst roll (§4.1). Rule 1 finishes only when the *minimum* damage kills —
+#: a finisher that only lands on a good roll is a gamble, not a finish (E2).
+FINISH_SPREAD = 0.90
+#: The best roll, used by rule 2 to size the incoming beam at its worst case.
+PANIC_SPREAD = 1.10
+#: Rule 3's two guards: don't buy a long-term buff below half health, and don't
+#: pay for it down to an empty pool (E2).
+ASCEND_HP_FRACTION = 0.50
+ASCEND_KI = 65
+#: Rule 4's floor — above this a beam is affordable *and* leaves something behind.
+BEAM_KI = 80
+#: Rule 6's floor: below this the AI cannot even afford a Ki Blast, so it charges.
+RECOVER_KI = 15
+
+#: Attacks cheapest first, which is the order rule 1 scans for a finisher. It
+#: happens to coincide with ``ACTION_ORDER`` today; sorting by cost says why.
+_ATTACKS_BY_COST = sorted(
+    (action for action in ACTION_ORDER if MOVES[action]["is_attack"]),
+    key=lambda action: MOVES[action]["cost"],
+)
+
+
+def _rule_finish(me: dict, foe: dict) -> str | None:
+    """Rule 1 — the cheapest attack whose minimum damage takes ``foe`` to 0.
+
+    Cheapest, not strongest: spending 40 ki to win a fight a free Strike also
+    wins throws away the ki the *next* tournament turn would have had. Legality
+    is not checked here — the caller drops any rule whose move it cannot play,
+    so an unaffordable finisher falls through to the next candidate cost.
+    """
+    for action in _ATTACKS_BY_COST:
+        damage = compute_damage(me, foe, MOVES[action]["power"], FINISH_SPREAD)
+        if damage >= foe["hp"]:
+            return action
+    return None
+
+
+def _rule_panic_guard(me: dict, foe: dict) -> str | None:
+    """Rule 2 — Guard when ``foe``'s best-case Surge Beam would be lethal (E2).
+
+    ``compute_damage`` reads ``me["guarding"]``, which is always ``False`` at
+    selection time (``resolve_turn`` clears it at the end of every turn), so this
+    is the unguarded number the spec asks for. Surviving beats trading — but the
+    streak cap still outranks this rule, and the AI may die because of that
+    (E2.1).
+    """
+    beam = MOVES["surge_beam"]
+    if foe["ki"] < beam["cost"]:
+        return None
+    if compute_damage(foe, me, beam["power"], PANIC_SPREAD) >= me["hp"]:
+        return "guard"
+    return None
+
+
+def _rule_ascend(me: dict, foe: dict) -> str | None:
+    """Rule 3 — Ascend while healthy enough to spend the buff and rich enough to pay."""
+    if me["hp"] / me["hp_max"] >= ASCEND_HP_FRACTION and me["ki"] >= ASCEND_KI:
+        return "ascend"
+    return None
+
+
+def _rule_beam(me: dict, foe: dict) -> str | None:
+    """Rule 4 — Surge Beam once the pool can afford it without emptying."""
+    return "surge_beam" if me["ki"] >= BEAM_KI else None
+
+
+def _rule_poke(me: dict, foe: dict) -> str | None:
+    """Rule 5 — Ki Blast whenever it is affordable."""
+    return "ki_blast"
+
+
+def _rule_recover(me: dict, foe: dict) -> str | None:
+    """Rule 6 — Charge when there is not even a Ki Blast left in the tank."""
+    return "charge" if me["ki"] < RECOVER_KI else None
+
+
+def _rule_fallback(me: dict, foe: dict) -> str | None:
+    """Rule 7 — Strike, which costs 0 ki and is therefore always available."""
+    return "strike"
+
+
+#: E2's priority list, in order. The first rule returning a move the AI may
+#: actually play selects it; every other rule is skipped, including on grounds of
+#: legality. Keeping it a list rather than a chain of ``if``s is what lets the
+#: tests name a rule by index and what makes the "first match wins" reading
+#: literal rather than a property of how the branches happen to nest.
+_HEURISTIC_RULES = (
+    _rule_finish,
+    _rule_panic_guard,
+    _rule_ascend,
+    _rule_beam,
+    _rule_poke,
+    _rule_recover,
+    _rule_fallback,
+)
+
+
+def _choose_heuristic(state: dict, side: str, rng=None) -> str:
+    """Deterministic rule-based selection (E2).
+
+    ``rng`` is accepted to match the policy signature and is never touched: this
+    is a pure function of the state, which is what makes a heuristic match
+    reproducible without a seed at all.
+
+    Candidacy is checked once, against the cap-filtered legal moves, so a rule is
+    skipped both when its move is illegal (§5.4) and when E2.1 has forbidden it
+    this turn. That is why the cap "outranks every rule above it" needs no
+    special case: on a third consecutive passive turn the panic guard simply is
+    not a candidate, and the scan falls through to an attack.
+
+    The scan always terminates: rule 7 returns Strike, which costs 0 ki and is an
+    attack, so it survives both filters unconditionally.
+    """
+    me = state[side]
+    foe = state[_FOE[side]]
+    candidates = attacking_candidates(me, legal_actions(me))
+    for rule in _HEURISTIC_RULES:
+        action = rule(me, foe)
+        if action is not None and action in candidates:
+            return action
+    raise AssertionError(f"no candidate for {side}: {candidates}")  # pragma: no cover
+
+
 #: difficulty -> policy. ``choose_action`` dispatches through this rather than a
 #: chain of ``if``s so adding a policy cannot forget to register it, and so
 #: :data:`DIFFICULTIES` can never drift from what is actually implemented.
 _POLICIES = {
     "random": _choose_random,
+    "heuristic": _choose_heuristic,
 }
 
 #: The difficulty values the API accepts (E1), in the spec's order.
