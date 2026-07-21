@@ -1,10 +1,31 @@
 """HTTP layer tests (spec §5, §8, §9), driven through Flask's test client."""
 
+import random
 import uuid
 
 import pytest
 
-from app import create_app
+from app import create_app, serialize
+from game import rules
+
+# The §5.5 payload, key for key. Written out literally rather than derived from
+# the code so a field that quietly appears or disappears fails a test.
+STATE_KEYS = {"match_id", "status", "turn", "player", "opponent", "legal_actions", "log"}
+FIGHTER_KEYS = {
+    "id",
+    "name",
+    "hp",
+    "hp_max",
+    "ki",
+    "ki_max",
+    "atk",
+    "def",
+    "spd",
+    "guarding",
+    "ascended",
+    "ascend_used",
+}
+LOG_ENTRY_KEYS = {"turn", "actor", "action", "damage", "target_hp", "text"}
 
 
 @pytest.fixture()
@@ -188,3 +209,142 @@ def test_a_seeded_match_stores_a_reproducible_rng(client):
 
     first, second = (app.extensions["matches"][i]["rng"] for i in ids)
     assert [first.random() for _ in range(5)] == [second.random() for _ in range(5)]
+
+
+# --- Serialization (§5.5) ---------------------------------------------------
+
+
+def advance(app, match_id, player_action):
+    """Play one turn straight through the rules, bypassing the HTTP layer.
+
+    `POST .../turn` does not exist yet (plan 2.4), but serialization has to be
+    provable against a match that is mid-fight and against one that is over, so
+    these tests drive the stored match the same way the route will.
+    """
+    match = app.extensions["matches"][match_id]
+    state, _ = rules.play_turn(match["state"], player_action, match["rng"])
+    state["status"] = rules.check_status(state)
+    match["state"] = state
+    return state
+
+
+def test_the_payload_has_exactly_the_spec_keys(client):
+    state = create(client).get_json()
+
+    assert set(state) == STATE_KEYS
+    assert set(state["player"]) == FIGHTER_KEYS
+    assert set(state["opponent"]) == FIGHTER_KEYS
+
+
+def test_log_entries_have_exactly_the_spec_keys(client):
+    app = create_app()
+    match_id = (
+        app.test_client()
+        .post(
+            "/api/match",
+            json={"player_fighter": "kaito", "opponent_fighter": "vega", "seed": 11},
+        )
+        .get_json()["match_id"]
+    )
+    advance(app, match_id, "strike")
+
+    log = app.test_client().get(f"/api/match/{match_id}").get_json()["log"]
+
+    assert log
+    for entry in log:
+        assert set(entry) == LOG_ENTRY_KEYS
+
+
+def test_guarding_is_always_false_in_a_returned_state(client):
+    app = create_app()
+    match_id = (
+        app.test_client()
+        .post(
+            "/api/match",
+            json={"player_fighter": "kaito", "opponent_fighter": "vega", "seed": 5},
+        )
+        .get_json()["match_id"]
+    )
+    api = app.test_client()
+
+    for _ in range(12):
+        advance(app, match_id, "guard")
+        state = api.get(f"/api/match/{match_id}").get_json()
+        assert state["player"]["guarding"] is False
+        assert state["opponent"]["guarding"] is False
+        if state["status"] != "in_progress":
+            break
+
+
+def test_legal_actions_agrees_with_the_rules_at_every_turn(client):
+    app = create_app()
+    api = app.test_client()
+    match_id = api.post(
+        "/api/match",
+        json={"player_fighter": "kaito", "opponent_fighter": "vega", "seed": 1234},
+    ).get_json()["match_id"]
+
+    # A separate RNG picks the player's actions, so the match RNG keeps its §4.8
+    # draw order.
+    picker = random.Random(99)
+    while True:
+        state = api.get(f"/api/match/{match_id}").get_json()
+        stored = app.extensions["matches"][match_id]["state"]
+        if state["status"] != "in_progress":
+            break
+        assert state["legal_actions"] == rules.legal_actions(stored["player"])
+        advance(app, match_id, picker.choice(state["legal_actions"]))
+
+    assert state["legal_actions"] == []
+
+
+def test_legal_actions_is_empty_once_the_match_is_over(client):
+    app = create_app()
+    api = app.test_client()
+    match_id = api.post(
+        "/api/match", json={"player_fighter": "kaito", "opponent_fighter": "vega"}
+    ).get_json()["match_id"]
+
+    # The player still has moves left; only the status decides the answer.
+    stored = app.extensions["matches"][match_id]["state"]
+    stored["status"] = "player_won"
+
+    state = api.get(f"/api/match/{match_id}").get_json()
+    assert state["status"] == "player_won"
+    assert state["legal_actions"] == []
+    assert rules.legal_actions(stored["player"]) != []
+
+
+@pytest.mark.parametrize("status", ["player_won", "opponent_won", "draw"])
+def test_every_terminal_status_suppresses_legal_actions(client, status):
+    app = create_app()
+    api = app.test_client()
+    match_id = api.post(
+        "/api/match", json={"player_fighter": "kaito", "opponent_fighter": "vega"}
+    ).get_json()["match_id"]
+    app.extensions["matches"][match_id]["state"]["status"] = status
+
+    assert api.get(f"/api/match/{match_id}").get_json()["legal_actions"] == []
+
+
+def test_serialize_hands_back_copies_not_the_stored_dicts():
+    app = create_app()
+    match_id = (
+        app.test_client()
+        .post(
+            "/api/match",
+            json={"player_fighter": "kaito", "opponent_fighter": "vega", "seed": 3},
+        )
+        .get_json()["match_id"]
+    )
+    advance(app, match_id, "strike")
+    stored = app.extensions["matches"][match_id]["state"]
+    hp_before = stored["player"]["hp"]
+    damage_before = stored["log"][0]["damage"]
+
+    payload = serialize(match_id, stored)
+    payload["player"]["hp"] = 1
+    payload["log"][0]["damage"] = 999
+
+    assert stored["player"]["hp"] == hp_before
+    assert stored["log"][0]["damage"] == damage_before

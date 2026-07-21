@@ -273,7 +273,7 @@ Not used: `flask-cors` (see A9), `requests`, any state/fetch library.
       Tests: fetch after create returns a byte-identical payload; two consecutive GETs are identical
       (no hidden mutation); unknown id → 404 with the right code.
 
-- [ ] **2.3 Serialization and `legal_actions`.**
+- [x] **2.3 Serialization and `legal_actions`.**
       Files: `backend/app.py`, `backend/tests/test_api.py`.
       `serialize(match)` emits exactly the §5.5 keys — including `guarding`, always `false` (§5.5) —
       and computes `legal_actions` for the **player**, empty whenever `status != "in_progress"`.
