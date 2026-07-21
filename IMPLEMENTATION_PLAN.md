@@ -215,7 +215,7 @@ installed is the whole stack.
   `hp/hp_max >= 0.50` **and** `ki >= 65` (both boundaries tested); beam needs `ki >= 80`; poke;
   recover at `ki < 15`; Strike as the fallback. Every rule skips itself when the move is illegal.
 
-- [ ] **2.3 — Cap precedence and legality fuzz.**
+- [x] **2.3 — Cap precedence and legality fuzz.**
   Files: `backend/game/ai.py` if the tests find a gap; otherwise tests only.
   Tests: `test_ai.py` — on a third consecutive passive turn the heuristic **attacks even though rule
   2 would have it guard**, and may consequently die (E2.1's stated precedence, an E10 criterion);

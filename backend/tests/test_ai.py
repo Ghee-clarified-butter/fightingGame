@@ -17,8 +17,9 @@ from game.ai import (
     choose_action,
     play_turn,
 )
+from game.fighters import FIGHTERS
 from game.moves import ACTION_ORDER, MOVES
-from game.rules import legal_actions, new_match
+from game.rules import legal_actions, new_match, resolve_turn
 
 ATTACKS = [action for action in ACTION_ORDER if MOVES[action]["is_attack"]]
 PASSIVES = [action for action in ACTION_ORDER if not MOVES[action]["is_attack"]]
@@ -343,3 +344,158 @@ def test_a_heuristic_match_plays_out_through_play_turn():
         for entry in entries:
             assert entry["action"] in ACTION_ORDER
     assert state["status"] in {"player_won", "opponent_won", "draw"}
+
+
+# --- Cap precedence over the heuristic's own rules (E2.1) --------------------
+#
+# E2.1 states the cap "outranks every rule that would otherwise fire". The pair
+# below is that sentence made falsifiable: one position, one difference — the
+# streak — and the AI trades a survivable turn for a lethal one because of it.
+# Kaito on 35 hp against a Vega holding 80 ki with Ascend spent:
+#   * rule 2 sees Vega's best-case Surge Beam at 48 * 16/(16+8) * 1.10 = 35,
+#     exactly lethal, and wants to Guard;
+#   * guarded, that same beam deals round(35.2 * 0.5) = 18, so Guard survives.
+
+_LETHAL_BEAM_PLAYER = {"hp": 35, "ki": 0}
+_BEAM_READY_OPPONENT = {"ki": 80, "ascend_used": True}
+
+
+def test_rule_2_would_guard_against_this_beam():
+    """The control: below the cap the panic guard fires on this exact position."""
+    chosen = _heuristic(player=_LETHAL_BEAM_PLAYER, opponent=_BEAM_READY_OPPONENT)
+    assert chosen == "guard"
+
+
+def test_the_cap_overrides_the_panic_guard():
+    """E10: at the cap the same position attacks instead — the cap outranks rule 2."""
+    player = dict(_LETHAL_BEAM_PLAYER, passive_streak=PASSIVE_CAP)
+    chosen = _heuristic(player=player, opponent=_BEAM_READY_OPPONENT)
+    assert MOVES[chosen]["is_attack"]
+    assert chosen == "strike"
+
+
+@pytest.mark.parametrize(
+    ("streak", "status"),
+    [(0, "in_progress"), (PASSIVE_CAP, "opponent_won")],
+)
+def test_the_cap_may_cost_the_ai_the_match(streak, status):
+    """E2.1's stated price: forced out of Guard, the AI eats the beam and dies.
+
+    Resolved at a fixed ``spread`` of 1.10 (B6) so the outcome is the rule's
+    consequence rather than a roll: no RNG is consumed by either the selection or
+    the resolution. Kaito is the faster fighter, so it swings first and is still
+    alive to be killed by the reply.
+    """
+    match = _match_with(
+        player=dict(_LETHAL_BEAM_PLAYER, passive_streak=streak),
+        opponent=_BEAM_READY_OPPONENT,
+    )
+    player_action = choose_action(match, "player", "heuristic")
+    opponent_action = choose_action(match, "opponent", "heuristic")
+    assert opponent_action == "surge_beam"
+    state, _ = resolve_turn(
+        match,
+        player_action,
+        opponent_action,
+        None,
+        order=("player", "opponent"),
+        spread=1.10,
+    )
+    assert state["status"] == status
+
+
+# --- Legality fuzz across every difficulty (E10) -----------------------------
+
+
+def _random_fighter(rng: random.Random) -> dict:
+    """A fighter at an arbitrary reachable point in a match.
+
+    ``hp`` never reaches 0 — a KO'd fighter is never asked to choose — and
+    ``ascended`` implies ``ascend_used`` because ``_apply_ascend`` sets both.
+    """
+    fighter = new_match(rng.choice(list(FIGHTERS)), "vega")["player"]
+    fighter["hp"] = rng.randint(1, fighter["hp_max"])
+    fighter["ki"] = rng.randint(0, fighter["ki_max"])
+    fighter["ascended"] = rng.random() < 0.4
+    fighter["ascend_used"] = fighter["ascended"] or rng.random() < 0.3
+    fighter["passive_streak"] = rng.randint(0, PASSIVE_CAP + 3)
+    return fighter
+
+
+def _random_state(rng: random.Random) -> dict:
+    state = new_match("kaito", "vega")
+    state["turn"] = rng.randint(0, 99)
+    state["player"] = _random_fighter(rng)
+    state["opponent"] = _random_fighter(rng)
+    return state
+
+
+@pytest.mark.parametrize("difficulty", DIFFICULTIES)
+def test_every_difficulty_only_ever_picks_a_legal_move(difficulty):
+    """1000 generated states per policy: the cap filters, it never invents.
+
+    ``attacking_candidates`` falls back to the unfiltered list when it would
+    otherwise empty one, so this is the assertion that catches a policy returning
+    a move the fighter cannot pay for — at any streak, including well past the
+    cap.
+    """
+    rng = random.Random(2024)
+    for index in range(1000):
+        for side in ("player", "opponent"):
+            state = _random_state(rng)
+            action = choose_action(state, side, difficulty, rng)
+            allowed = legal_actions(state[side])
+            assert action in allowed, f"{difficulty} #{index} {side}: {action} not in {allowed}"
+
+
+@pytest.mark.parametrize("difficulty", DIFFICULTIES)
+def test_the_cap_forces_an_attack_at_every_streak_above_it(difficulty):
+    """The other half of the fuzz: past the cap, only attacks come out."""
+    rng = random.Random(99)
+    for _ in range(500):
+        state = _random_state(rng)
+        state["opponent"]["passive_streak"] = rng.randint(PASSIVE_CAP, PASSIVE_CAP + 3)
+        action = choose_action(state, "opponent", difficulty, rng)
+        assert MOVES[action]["is_attack"], f"{difficulty}: {action} at the cap"
+
+
+def test_the_heuristic_consumes_no_randomness():
+    """E3.4's principle, one policy early: a pure policy leaves the RNG alone.
+
+    Checked over generated states rather than one, because a stray draw on a
+    single branch is exactly the bug a single position would miss.
+    """
+    rng = random.Random(31)
+    for _ in range(200):
+        state = _random_state(rng)
+        probe = random.Random(77)
+        before = probe.getstate()
+        choose_action(state, "player", "heuristic", probe)
+        assert probe.getstate() == before
+
+
+def test_legal_actions_ignores_the_streak_over_generated_states():
+    """The player-not-bound criterion at the source (E2.1).
+
+    ``legal_actions`` is what the HTTP layer validates a player's move against,
+    so if it were byte-identical only on the positions a hand-written test
+    happens to pick, the cap could still leak into the player's options.
+    """
+    rng = random.Random(505)
+    for _ in range(500):
+        fighter = _random_fighter(rng)
+        baseline = legal_actions(dict(fighter, passive_streak=0))
+        for streak in range(1, PASSIVE_CAP + 4):
+            assert legal_actions(dict(fighter, passive_streak=streak)) == baseline
+
+
+@pytest.mark.parametrize("difficulty", DIFFICULTIES)
+def test_the_player_may_charge_four_turns_running_at_every_difficulty(difficulty):
+    """E10: the cap binds AI policy only, whichever policy the match was made with."""
+    state = _match_with(difficulty=difficulty)
+    rng = random.Random(13)
+    for turn in range(1, 5):
+        assert "charge" in legal_actions(state["player"])
+        state, entries = play_turn(state, "charge", rng)
+        assert any(e["actor"] == "player" and e["action"] == "charge" for e in entries)
+        assert state["player"]["passive_streak"] == turn
