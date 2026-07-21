@@ -334,7 +334,7 @@ installed is the whole stack.
   Tests: new `backend/tests/test_db.py` — `init_db` is idempotent; a fresh temp path creates the file
   and every table; the override is honoured so no test ever writes the real database.
 
-- [ ] **7.2 — Models.**
+- [x] **7.2 — Models.**
   Files: new `backend/models.py` — `Fighter(id)` only (E6.1: stats are never copied out of
   `fighters.py`), `Tournament`, `TournamentMatch` including `fighter_a_seed` / `fighter_b_seed` /
   `winner_seed` (E7.2) and the `(tournament_id, round, slot)` unique constraint; `seed_fighters`

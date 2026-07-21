@@ -8,13 +8,24 @@ writes the real database.
 
 from pathlib import Path
 
-from sqlalchemy import inspect
+import pytest
+from sqlalchemy import inspect, select
+from sqlalchemy.exc import IntegrityError
 
 import db
+import models
+from game.fighters import FIGHTERS
 
 
 def _file_url(path: Path) -> str:
     return f"sqlite+pysqlite:///{path}"
+
+
+def _session(tmp_path, name="models.db"):
+    """A fresh, schema-initialised session over a temp file."""
+    engine = db.make_engine(_file_url(tmp_path / name))
+    db.init_db(engine)
+    return db.make_session_factory(engine)()
 
 
 def test_init_db_creates_the_file(tmp_path):
@@ -103,3 +114,127 @@ def test_in_memory_url_needs_no_directory():
     # ``:memory:`` databases are per-connection, so a table check must reuse the
     # same connection init_db ran on rather than opening a fresh one.
     assert engine.url.database == ":memory:"
+
+
+# --- task 7.2: models -------------------------------------------------------
+
+
+def _column(model, name):
+    return inspect(model).columns[name]
+
+
+def test_models_register_the_three_tables(tmp_path):
+    """Importing models registers fighter, tournament and tournament_match."""
+    engine = db.make_engine(_file_url(tmp_path / "tables.db"))
+    db.init_db(engine)
+
+    created = set(inspect(engine).get_table_names())
+    assert {"fighter", "tournament", "tournament_match"} <= created
+
+
+def test_fighter_table_stores_only_an_id():
+    """E6.1: Fighter is id-only; no stat column may creep in and split the truth."""
+    columns = {c.name for c in inspect(models.Fighter).columns}
+    assert columns == {"id"}
+    # Named explicitly so a later "helpful" addition of any stat fails loudly.
+    for stat in ("hp_max", "ki_max", "atk", "def", "spd", "name"):
+        assert stat not in columns
+
+
+def test_tournament_columns_and_nullability():
+    """Every E6.1 Tournament column exists with the right nullability."""
+    not_null = {"id", "name", "difficulty", "seed", "size", "status", "created_at"}
+    nullable = {"champion_id"}
+    columns = {c.name: c for c in inspect(models.Tournament).columns}
+
+    assert set(columns) == not_null | nullable
+    for name in not_null:
+        assert not columns[name].nullable, name
+    for name in nullable:
+        assert columns[name].nullable, name
+    assert columns["id"].primary_key
+
+
+def test_tournament_match_columns_and_nullability():
+    """Every E6.1 / E7.2 TournamentMatch column exists with the right nullability."""
+    not_null = {"id", "tournament_id", "round", "slot", "status"}
+    nullable = {
+        "fighter_a_id",
+        "fighter_b_id",
+        "fighter_a_seed",
+        "fighter_b_seed",
+        "winner_id",
+        "winner_seed",
+        "turns",
+        "attempts_json",
+    }
+    columns = {c.name: c for c in inspect(models.TournamentMatch).columns}
+
+    assert set(columns) == not_null | nullable
+    for name in not_null:
+        assert not columns[name].nullable, name
+    for name in nullable:
+        assert columns[name].nullable, name
+    assert columns["id"].primary_key
+    assert columns["tournament_id"].index
+
+
+def test_match_position_is_unique(tmp_path):
+    """(tournament_id, round, slot) is unique — the bracket coordinate is identity."""
+    session = _session(tmp_path)
+    models.seed_fighters(session)
+    session.add(models.Tournament(
+        id="t1", name="Cup", difficulty="heuristic", seed=1, size=4, status="pending",
+    ))
+    session.flush()
+
+    session.add(models.TournamentMatch(
+        id="m1", tournament_id="t1", round=1, slot=0, status="ready",
+    ))
+    session.add(models.TournamentMatch(
+        id="m2", tournament_id="t1", round=1, slot=0, status="ready",
+    ))
+    with pytest.raises(IntegrityError):
+        session.flush()
+
+
+def test_two_matches_may_share_a_slot_across_tournaments(tmp_path):
+    """The uniqueness is scoped to a tournament, not global (round, slot)."""
+    session = _session(tmp_path)
+    for tid in ("ta", "tb"):
+        session.add(models.Tournament(
+            id=tid, name="Cup", difficulty="heuristic", seed=1, size=4,
+            status="pending",
+        ))
+    session.flush()
+
+    session.add(models.TournamentMatch(
+        id="ma", tournament_id="ta", round=1, slot=0, status="ready",
+    ))
+    session.add(models.TournamentMatch(
+        id="mb", tournament_id="tb", round=1, slot=0, status="ready",
+    ))
+    session.flush()  # no IntegrityError
+
+    assert session.get(models.TournamentMatch, "ma").slot == 0
+    assert session.get(models.TournamentMatch, "mb").slot == 0
+
+
+def test_seed_fighters_inserts_exactly_the_registry(tmp_path):
+    """seed_fighters inserts exactly the ids in FIGHTERS."""
+    session = _session(tmp_path)
+    models.seed_fighters(session)
+
+    ids = set(session.scalars(select(models.Fighter.id)))
+    assert ids == set(FIGHTERS)
+
+
+def test_seed_fighters_is_idempotent(tmp_path):
+    """A second seed_fighters call adds nothing and never trips the primary key."""
+    session = _session(tmp_path)
+    models.seed_fighters(session)
+    models.seed_fighters(session)  # must not raise on the duplicate ids
+
+    ids = list(session.scalars(select(models.Fighter.id)))
+    assert set(ids) == set(FIGHTERS)
+    assert len(ids) == len(FIGHTERS)
