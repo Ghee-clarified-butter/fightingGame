@@ -355,7 +355,7 @@ Not used: `flask-cors` (see A9), `requests`, any state/fetch library.
       Tests: `player_won`, `opponent_won` and `draw` each render their own message; a "new match"
       control is present and fires its callback; nothing renders while `in_progress`.
 
-- [ ] **3.6 Match screen wiring.**
+- [x] **3.6 Match screen wiring.**
       Files: `frontend/src/App.tsx`, `frontend/src/MatchScreen.tsx`,
       `frontend/src/MatchScreen.test.tsx`.
       Compose 3.2–3.5 over one `MatchState`; create a match on mount; on a move click call
