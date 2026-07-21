@@ -348,7 +348,7 @@ Not used: `flask-cors` (see A9), `requests`, any state/fetch library.
       builds no sentences of its own (assert rendered text equals the input text); an empty log
       renders without crashing.
 
-- [ ] **3.5 Result screen.**
+- [x] **3.5 Result screen.**
       Files: `frontend/src/components/ResultScreen.tsx`,
       `frontend/src/components/ResultScreen.test.tsx`.
       Shown when `status` leaves `in_progress`, with a "new match" action (§7).
