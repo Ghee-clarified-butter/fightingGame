@@ -564,6 +564,98 @@ def test_a_rejected_turn_leaves_the_match_playable(client):
     assert state["turn"] == 1
 
 
+# --- A rejected turn does not advance the RNG (§5.4, §8) --------------------
+#
+# Comparing the state before and after a rejected request only proves the store
+# was left alone. It cannot see the match RNG, and a validation path that drew
+# the opponent's move before rejecting would look identical — until the *next*
+# legal turn came out differently. These tests pin the RNG by replaying a fixed
+# seed with and without rejected requests interleaved, and comparing the end.
+
+
+LEGAL_SEQUENCE = ("charge", "strike", "guard", "ki_blast", "strike", "charge")
+
+
+def play_sequence(client, match_id, actions):
+    """Play ``actions`` in order, asserting each one is accepted."""
+    state = None
+    for action in actions:
+        response = client.post(f"/api/match/{match_id}/turn", json={"action": action})
+        assert response.status_code == 200, response.get_json()
+        state = response.get_json()
+    return state
+
+
+def test_a_rejected_turn_does_not_advance_the_match_rng(client):
+    """Same seed, same legal moves, rejections interleaved → same match."""
+    clean_id = seeded(client, 31337)
+    clean = play_sequence(client, clean_id, LEGAL_SEQUENCE)
+
+    dirty_id = seeded(client, 31337)
+    # Kaito opens on 30 ki, so Surge Beam is unaffordable before a single turn
+    # is played — a rejection that lands *before* the first draw of the match.
+    reject(client, dirty_id, {"action": "surge_beam"}, "insufficient_ki")
+    for index, action in enumerate(LEGAL_SEQUENCE):
+        # ...and one between every pair of legal turns, so a stray draw at any
+        # point in the sequence would desynchronise the rest of it.
+        reject(client, dirty_id, {"action": "punch"}, "unknown_action")
+        reject(client, dirty_id, {}, "unknown_action")
+        assert play_sequence(client, dirty_id, [action])["turn"] == index + 1
+    dirty = client.get(f"/api/match/{dirty_id}").get_json()
+
+    assert dirty["log"] == clean["log"]
+    assert dirty["player"] == clean["player"]
+    assert dirty["opponent"] == clean["opponent"]
+    assert dirty["turn"] == clean["turn"]
+    assert dirty["status"] == clean["status"]
+
+
+def test_the_rng_is_untouched_even_by_a_rejection_mid_match(client):
+    """The turn *after* a rejection is the one the clean run would have played."""
+    clean_id = seeded(client, 606)
+    play_sequence(client, clean_id, ["charge", "charge"])
+    expected = play_sequence(client, clean_id, ["strike"])
+
+    dirty_id = seeded(client, 606)
+    play_sequence(client, dirty_id, ["charge", "charge"])
+    # An Ascend the fighter can afford but has no ki for would be a *different*
+    # code; this one is simply not a move, so it can never reach the rules.
+    reject(client, dirty_id, {"action": "Strike"}, "unknown_action")
+    actual = play_sequence(client, dirty_id, ["strike"])
+
+    assert actual["log"][-1] == expected["log"][-1]
+    assert actual["opponent"]["hp"] == expected["opponent"]["hp"]
+
+
+def play_to_the_end(client, match_id, action="strike"):
+    """Play ``action`` until the match reaches a terminal status."""
+    state = client.get(f"/api/match/{match_id}").get_json()
+    while state["status"] == rules.STATUS_IN_PROGRESS:
+        legal = state["legal_actions"]
+        state = play_sequence(
+            client, match_id, [action if action in legal else legal[0]]
+        )
+    return state
+
+
+def test_a_409_on_a_finished_match_changes_nothing(client):
+    """The same replay argument, for the ``match_over`` rejection path."""
+    clean_id = seeded(client, 2024)
+    clean = play_to_the_end(client, clean_id)
+
+    dirty_id = seeded(client, 2024)
+    dirty = play_to_the_end(client, dirty_id)
+    for body in ({"action": "strike"}, {"action": "punch"}, {}):
+        reject(client, dirty_id, body, "match_over", status=409)
+
+    assert client.get(f"/api/match/{dirty_id}").get_json() == {
+        **clean,
+        "match_id": dirty_id,
+    }
+    assert dirty["status"] == clean["status"]
+    assert dirty["status"] != rules.STATUS_IN_PROGRESS
+
+
 def test_the_route_resolves_the_turn_the_rules_would(client):
     """The route adds no rule of its own: same seed, same actions, same result."""
     app = create_app()

@@ -298,7 +298,7 @@ Not used: `flask-cors` (see A9), `requests`, any state/fetch library.
       (§8); missing `action` and an empty body both → `unknown_action`; A6 precedence is asserted
       with an `ascend` that is both already-used and unaffordable.
 
-- [ ] **2.6 A rejected turn does not advance the RNG.**
+- [x] **2.6 A rejected turn does not advance the RNG.**
       Files: `backend/tests/test_api.py`.
       The §5.4 / §8 criterion that a state comparison cannot catch.
       Test: at a fixed seed, play N legal turns → record final state. At the same seed, submit an
