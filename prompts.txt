@@ -192,8 +192,16 @@ Include acceptance criteria and a test plan for both (unit tests for the AI poli
 board states; DB tests for bracket creation, advancement, and persistence).
 Do not implement yet.
 
-# STEP 2 / STAGE 2 — REVIEW (manual)
-(pending)
+# STEP 2 / STAGE 2 — REVIEW (manual, interactive Claude Code session)
+
+do it
+(approval to run Step 2 Stage 2; the stage prompt executed was:)
+
+Review specs/extension.md as a technical reviewer. Is the expectimax evaluation function well
+defined and cheap enough to run per turn? Does the AI ever get stuck in a charge/guard stalemate,
+and is that prevented? Are the DB models normalized, and is bracket advancement unambiguous for
+byes and odd rosters? Are persistence guarantees actually testable? Fix each issue directly in
+specs/extension.md. Do not implement.
 
 # STEP 2 / STAGE 3 — PLAN (loop)
 (pending)

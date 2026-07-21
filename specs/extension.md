@@ -58,9 +58,27 @@ always affordable, so an attack always exists.
 
 This requires per-fighter state: `passive_streak`, an integer on each fighter, incremented when
 that fighter's chosen action is non-attacking and reset to 0 on any attack. It is part of the
-match state and is serialized (E6.1).
+match state and is serialized (E4).
 
-The rule binds **all** policies including `random`, so no policy can stall a match.
+The rule binds **all AI policies** including `random`, so no policy can stall a match.
+
+**It does not bind the human player.** The cap is a constraint on *policy selection*, not a rule of
+the game. A player may Charge forever if they like — they will lose on the turn cap, which is their
+problem. Making it a game rule would change `legal_actions`, break base §8's "Guard is legal at
+0 ki" and "Charge raises ki by exactly 25" criteria, and rewrite a tested Step 1 contract to solve
+a problem that only exists for AI-vs-AI matches. `legal_actions` is therefore **unchanged** by this
+section, and `passive_streak` never affects what the player may submit.
+
+**Precedence: the cap outranks every rule above it, including rule 2 (panic guard).** On a third
+consecutive passive turn the policy attacks even when guarding would save its life. This is
+deliberate: an invariant with an exception is not an invariant, and "guard when about to die" is
+exactly the condition that can recur forever. The AI may die because of this. That is the price of
+a guaranteed-terminating match, and it is cheaper than a tournament decided by turn caps.
+
+**The cap is enforced at the root of a search only**, not inside its tree (E3). A search may
+therefore plan a line whose continuation it would not be allowed to play. Accepted: enforcing it
+inside the tree means threading streak state through every node for a rule that only binds the
+next single move.
 
 ## E3. Expectimax search
 
@@ -78,12 +96,21 @@ A depth-limited expectimax over the existing `resolve_turn`. Nodes alternate:
 
 ### E3.2 Averaging the spread
 
-The spread is continuous on `[0.90, 1.10]` (§4.1) and cannot be enumerated. It is approximated by
-**three equally weighted samples: `0.90`, `1.00`, `1.10`** — the midpoint plus both extremes,
-weight `1/3` each.
+The spread is continuous on `[0.90, 1.10]` (§4.1) and cannot be enumerated, so it is sampled at
+**three equally weighted points — `0.9333`, `1.0000`, `1.0667`** (weight `1/3` each).
+
+These are the *midpoints of three equal-probability intervals* of the uniform distribution, not the
+extremes. Sampling `0.90 / 1.00 / 1.10` would put a third of the probability mass on each endpoint
+of a distribution that is actually uniform across the interval, inflating the variance the search
+believes it faces and biasing it toward defensive play. The endpoints still appear in the spec —
+but in E2 rules 1 and 2, where reasoning about the *worst and best case* is the point.
 
 A turn where **neither** side attacks has no spread and produces exactly one child, not three.
 This matters for cost as well as correctness: mixed charge/guard lines are cheap.
+
+**Only the root ply branches three ways.** Deeper plies use the single mean sample `1.0000`. Beyond
+one turn of lookahead the spread's contribution is dominated by the choice of moves, and paying a
+3× branching factor per ply for it is what pushes the search past its time budget (E3.5).
 
 The samples are fixed constants, not draws. **The search consumes no RNG** — see E3.4.
 
@@ -132,13 +159,26 @@ Consequences that must hold:
 
 ### E3.5 Cost bound
 
-Per turn, at `depth = 2`, worst case: 6 AI actions × 6 opponent actions × 3 spreads = 108 nodes at
-ply 1, and 108 × 108 ≈ 11,664 leaves. Legal-move filtering typically cuts branching to 4–5, and
-non-attacking pairs collapse their chance node to one child.
+Counting `resolve_turn` calls at `depth = 2`, with the root-ply-only chance branching of E3.2:
 
-**Requirement: a `search` move must be chosen in under 100 ms on the reference machine, and this
-is asserted by a test.** If depth 2 cannot meet it, the depth is lowered — the budget wins, not the
-depth. Depth 3 is permitted only if it also fits the budget.
+| | Branching | Cumulative |
+|---|---|---|
+| Root ply: AI × player actions | 6 × 6 = 36 | 36 |
+| Root ply: spread samples | × 3 | 108 |
+| Second ply: AI × player actions | × 36 | 3,888 |
+| Second ply: spread (mean only) | × 1 | **3,888 leaves** |
+
+Legal-move filtering usually cuts 6 to 4–5, giving ~1,900 in practice.
+
+Had every ply branched three ways on the spread, this would be **11,664** leaves — and at a
+realistic 15–25 µs per `resolve_turn` on dict state, that is 175–290 ms. The budget below would be
+unmeetable, and the failure would have surfaced during Build as a mysteriously slow test rather
+than as a design error. This is why E3.2 restricts chance branching to the root ply.
+
+**Requirement: a `search` move must be chosen in under 150 ms on the reference machine, asserted by
+a test on a worst-case position (both sides at full ki, every move legal).** If depth 2 cannot meet
+it, the depth drops to 1 — **the budget wins, not the depth**. Depth 3 is permitted only if it also
+fits, which at ~140,000 leaves it will not; it is listed as out of reach rather than aspirational.
 
 Memoization is optional; if used, the cache must be per-move-selection, never across turns, since
 stale entries would break determinism.
@@ -156,6 +196,21 @@ Absent ⇒ `"random"`, so every Step 1 request stays valid and behaves identical
 The match state object (§5.5) gains `"difficulty"` and each fighter gains `"passive_streak"`.
 
 New error: `unknown_difficulty` (400) for a value outside the three.
+
+### E4.1 This is a breaking change to a tested contract
+
+Base §5.5 is asserted **exactly** — Step 1's task 2.3 test checks "response keys match §5.5 exactly,
+no extras and none missing". Adding two keys therefore **fails an existing passing test**, and that
+failure is correct rather than incidental.
+
+The build loop must treat this as a deliberate contract revision, not a regression to work around:
+
+- Update `specs/base.md` §5.5 to include both new keys, so the two specs never disagree.
+- Update the Step 1 exact-shape assertion to the new shape.
+- Leave every other Step 1 criterion untouched and passing.
+
+Any other Step 1 test that breaks is a genuine regression and must be fixed in the code, not in the
+test. The exact-shape test is the *only* one expected to change.
 
 ## E5. Frontend changes for Part A
 
@@ -177,13 +232,19 @@ persist. Mixing the two would force a rewrite of working, tested code for no req
 
 ### E6.1 Models
 
-**`Fighter`** — the roster, seeded from `backend/game/fighters.py` on first run.
+**`Fighter`** — a registry of which fighter ids exist, seeded from `backend/game/fighters.py` on
+first run.
 
 | Column | Type | Notes |
 |---|---|---|
 | `id` | str, PK | `"kaito"` |
-| `name` | str | |
-| `hp_max`, `ki_max`, `atk`, `def_`, `spd` | int | `def` is reserved in Python; column name `def_`, JSON key `def` |
+
+**Stats are deliberately not stored.** `hp_max`, `atk`, `def`, `spd` and the rest live in
+`backend/game/fighters.py` and are read from there at match time. Copying them into the database
+creates two sources of truth that drift the moment anyone tunes a stat: existing rows would keep the
+old numbers, so a replayed tournament would silently disagree with a fresh one at the same seed, and
+base §8's "both templates match §2.1 field for field" would pass while the running game used
+something else. The table exists only to give `TournamentMatch` a foreign key to point at.
 
 **`Tournament`**
 
@@ -221,21 +282,40 @@ persist. Mixing the two would force a rewrite of working, tested code for no req
 For a roster of `n` fighters (`n >= 2`), bracket `size = 2^ceil(log2(n))` and
 `byes = size - n`.
 
-Round 1 has `size / 2` slots. Fighters are seeded in roster order (index 0 = top seed).
-**Byes go to the top `byes` seeds** — the standard convention, and it makes advancement
-deterministic rather than a matter of taste.
+Round 1 has `size / 2` slots. Entrants are numbered by roster order (index 0 = seed 1).
+
+**Seeds are placed by standard bracket order, not by slot order.** Build the seed sequence
+recursively:
+
+```
+order(1) = [1]
+order(2k) = interleave(order(k), [2k+1 - s for s in order(k)])
+```
+
+giving `[1,2]` for size 2, `[1,4,2,3]` for size 4, `[1,8,4,5,2,7,3,6]` for size 8. Round-1 slot `i`
+pairs `order[2i]` against `order[2i+1]`: for size 8 that is 1v8, 4v5, 2v7, 3v6.
+
+**Byes go to the top `byes` seeds**, which under this placement land in different halves of the
+bracket.
+
+Placing byes by *slot* order instead — slots 0, 1, 2 for `n = 5` — would put seeds 1, 2 and 3 all in
+the top half, so seeds 1 and 2 meet in round 2 and the final is seed 3 against seed 4 or 5. Top
+seeds must meet as late as possible; that is the entire point of seeding, and getting it wrong makes
+the bracket structurally unfair while still looking well-formed.
 
 A round-1 slot with only one fighter is created with `status = "bye"` and its `winner_id` already
 set to that fighter. Byes are never "played" and consume no RNG.
 
-Worked example, `n = 5` → `size = 8`, `byes = 3`:
+Worked example, `n = 5` → `size = 8`, `byes = 3`, placement `[1,8,4,5,2,7,3,6]`:
 
 | Slot | A | B | Status |
 |---|---|---|---|
-| 0 | seed 1 | — | `bye` → seed 1 advances |
-| 1 | seed 2 | — | `bye` → seed 2 advances |
-| 2 | seed 3 | — | `bye` → seed 3 advances |
-| 3 | seed 4 | seed 5 | `ready` |
+| 0 | seed 1 | — (seed 8 absent) | `bye` → seed 1 advances |
+| 1 | seed 4 | seed 5 | `ready` |
+| 2 | seed 2 | — (seed 7 absent) | `bye` → seed 2 advances |
+| 3 | seed 3 | — (seed 6 absent) | `bye` → seed 3 advances |
+
+Seeds 1 and 2 are now in opposite halves and can only meet in the final.
 
 ### E7.2 Advancement
 
@@ -246,8 +326,17 @@ even and **B** when `s` is odd. A match becomes `ready` when both its fighters a
 The tournament is `complete` when the single round-`log2(size)` match resolves; its winner is
 `champion_id`.
 
-`n` must be `>= 2`; `n = 1` is rejected (`invalid_roster`). Duplicate ids in a roster are allowed —
-a fighter may appear twice as two independent entrants — but the roster is capped at 16.
+`n` must be `>= 2`; `n = 1` is rejected (`invalid_roster`). The roster is capped at 16.
+
+**Duplicate fighter ids are allowed, so entrants are identified by seed, not by fighter id.**
+A roster of `["kaito","vega","kaito","vega"]` is four distinct entrants, and Kaito-vs-Kaito matches
+are legal (base §2.1). Every bracket position, every standings row and `champion` therefore carry a
+**seed number**, and `TournamentMatch` stores `fighter_a_seed` / `fighter_b_seed` / `winner_seed`
+integers alongside the fighter ids.
+
+Keying any of this on fighter id would merge the two Kaito entrants into one standings row with
+their wins and losses summed — including a row that is simultaneously eliminated and still playing.
+Display uses `"Kaito (2)"` so two entrants of the same fighter are distinguishable in the UI.
 
 ### E7.3 Per-match seeding
 
@@ -276,6 +365,13 @@ Plays the **next** `ready` match to completion, AI vs AI, at the tournament's di
 derived seed, then propagates the winner. Returns `200` and the updated bracket.
 
 "Next" is defined as **lowest round, then lowest slot** — total order, no ambiguity.
+
+**Tournaments are AI vs AI only.** The runbook floats "AI vs AI or player vs AI"; player
+participation is cut deliberately. A human-played tournament match needs a suspended, resumable
+match bound to a bracket slot — turn-by-turn persistence, a resume endpoint, and a UI mode that
+knows it is inside a bracket. That is a larger feature than the AI opponent and the bracket
+combined, and it earns nothing the acceptance criteria ask for. Players fight in single matches
+(Part A); tournaments demonstrate persistence and AI strength.
 
 Errors: `tournament_not_found` (404), `tournament_complete` (409), `no_ready_match` (409).
 
@@ -330,18 +426,27 @@ Routing may be a simple state toggle rather than a router dependency.
 - [ ] The heuristic never picks an illegal move, at any state, across 1000 crafted states.
 - [ ] Neither policy consumes RNG: `rng.getstate()` is unchanged across a move selection.
 - [ ] Same seed + same player actions ⇒ identical logs at **every** difficulty.
-- [ ] No fighter ever takes a non-attacking action three turns in a row, under any policy.
+- [ ] No **AI** ever takes a non-attacking action three turns in a row, under any policy.
+- [ ] The player is *not* bound by the streak cap: charging four turns running is accepted, and
+      `legal_actions` is byte-identical to what base §5.5 returned before this spec existed.
+- [ ] On a third consecutive passive turn the AI attacks even when rule 2 would have it guard.
 - [ ] Over 200 seeded heuristic-vs-heuristic matches, **≥95% end by KO**, not the turn cap.
-- [ ] `search` beats `random` in at least 70% of 100 seeded matches.
-- [ ] `search` beats `heuristic` in at least 55% of 100 seeded matches — the search must justify
-      its cost, or it is not worth having.
-- [ ] A `search` move is selected in under 100 ms.
+- [ ] `search` beats `random` in at least 70% of 200 seeded matches.
+- [ ] `search` beats `heuristic` in at least 55% of 200 seeded matches — the search must justify
+      its cost, or it is not worth having. Seeded, so the figure is reproducible rather than
+      sampled; record the measured rate in the test's docstring when it is known.
+- [ ] A `search` move is selected in under 150 ms on a worst-case position.
+- [ ] Chance branching is three-way at the root ply and one-way deeper (assert the leaf count).
 
 **Tournament**
 
 - [ ] A 4-fighter roster produces 2 first-round matches, 1 final, no byes.
 - [ ] A 5-fighter roster produces `size = 8` with 3 byes on the top 3 seeds, and those byes are
       pre-resolved with a winner and never played.
+- [ ] Round-1 placement follows standard seed order: for `size = 8`, slots pair 1v8, 4v5, 2v7, 3v6,
+      so seeds 1 and 2 can only meet in the final. Asserted for sizes 4, 8 and 16.
+- [ ] A roster with duplicate fighter ids yields that many distinct entrants, each with its own
+      standings row; a `["kaito","kaito"]` final has a winner and a loser, not one merged row.
 - [ ] A 2-fighter roster produces exactly one match, which is the final.
 - [ ] Rosters of size 0, 1 and 17 are rejected with `invalid_roster`.
 - [ ] Advancing repeatedly reaches `complete` with a `champion` for roster sizes 2–16.
@@ -394,3 +499,36 @@ and each error asserting the tournament is unchanged.
 
 **Frontend — Vitest**: difficulty selector present and disabled mid-match; bracket renders rounds,
 byes and champion; advance button calls the endpoint and re-renders; tournament list renders.
+
+---
+
+## E12. Review log (Step 2 / Stage 2)
+
+A skeptical pass over E1–E11. Nine defects found; each is fixed above.
+
+| # | Problem | Severity | Fix |
+|---|---|---|---|
+| 1 | The stalemate cap was written as binding "all policies", but the human player is not a policy. Enforcing it on submitted actions would change `legal_actions` and break base §8's "Guard is legal at 0 ki" and "Charge raises ki by exactly 25" — rewriting a tested Step 1 contract to solve an AI-vs-AI problem. | **High** | E2.1: the cap constrains policy selection only; `legal_actions` is explicitly unchanged. |
+| 2 | Adding `difficulty` and `passive_streak` silently breaks a *passing* Step 1 test — task 2.3 asserts the §5.5 key set exactly. The build loop would have met a red suite with no instruction on whether the test or the code was wrong. | **High** | New E4.1 names it as a deliberate contract revision, requires §5.5 in `specs/base.md` to be updated too, and states that this is the only Step 1 test permitted to change. |
+| 3 | The cost bound contradicted itself. Three-way chance branching at every ply gives ~11,664 `resolve_turn` calls at depth 2 — 175–290 ms in Python, against a stated 100 ms budget. The design could not meet its own requirement, and would have surfaced during Build as a slow test rather than a design error. | **High** | E3.2 restricts three-way branching to the root ply (3,888 leaves); E3.5 shows the arithmetic both ways and sets the budget at 150 ms with depth 1 as the stated fallback. |
+| 4 | Bye placement by slot order put seeds 1, 2 and 3 all in the top half for `n = 5`, so seeds 1 and 2 met in round 2 and the final was seed 3 against 4 or 5. Structurally unfair while still looking well-formed. | **High** | E7.1 adopts standard recursive bracket seeding (`[1,8,4,5,2,7,3,6]` at size 8), so byes land in opposite halves. |
+| 5 | Duplicate roster entries were allowed, but standings and `champion` keyed on fighter id — so two Kaito entrants merged into one row with summed wins and losses, capable of being eliminated and still playing at once. | **High** | E7.2: entrants are identified by seed; matches store `*_seed` alongside ids; display disambiguates as `"Kaito (2)"`. |
+| 6 | The chance node sampled `0.90 / 1.00 / 1.10`, putting a third of the probability mass on each endpoint of a *uniform* distribution. That inflates the variance the search believes it faces and biases it toward defensive play. | Medium | E3.2 uses equal-probability interval midpoints `0.9333 / 1.0000 / 1.0667`. The endpoints remain in E2 rules 1–2, where worst/best case is the actual question. |
+| 7 | The `Fighter` table duplicated stats that already live in `fighters.py`, creating two sources of truth. Tuning a stat would leave old rows stale, so a replayed tournament would silently disagree with a fresh one at the same seed. | Medium | E6.1 stores only the id; stats are always read from code. |
+| 8 | Rule 2 (panic guard) and the streak cap could both apply on a third passive turn, with no stated precedence — the single most likely spot for the two AIs to deadlock. | Medium | E2.1 gives the cap precedence and accepts the consequence (the AI can die guarding-when-it-may-not) in exchange for a real invariant. |
+| 9 | The runbook mentions player-vs-AI tournament matches; the spec neither implemented nor excluded them, leaving the build loop to guess at a feature needing suspended resumable matches. | Low | E8 cuts it explicitly, with the reasoning. |
+
+### Checked and found sound
+
+- **The no-RNG constraint holds up.** Making the heuristic and search pure, and confining draw #2 to
+  `difficulty: random`, keeps base §4.8's draw order intact at every difficulty. Search ties break
+  on canonical action order, so nothing reintroduces hidden randomness.
+- **Per-match seed derivation** (`root * 1_000_003 + round * 1_009 + slot`) makes a match's result
+  independent of the order matches are advanced in — which is what makes the order-independence
+  criterion testable rather than aspirational.
+- **Advancement arithmetic** (`s // 2`, A on even, B on odd) is unambiguous and needed no change.
+- **Keeping single matches in memory** while only tournaments persist avoids rewriting a working,
+  fully tested Step 1 store for a requirement nobody stated.
+- **The strength criteria are deterministic, not sampled** — they use fixed seeds, so a 55%
+  threshold is a reproducible fact about the implementation rather than a flaky statistic. The
+  sample was raised from 100 to 200 seeds so the figure is less sensitive to a single lucky match.
