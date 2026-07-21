@@ -288,7 +288,7 @@ Not used: `flask-cors` (see A9), `requests`, any state/fetch library.
       Tests: `strike` reduces opponent hp by ≥1 and appends ≥1 log entry (§8); `turn` increments by
       one per request; the log grows monotonically and stays oldest-first.
 
-- [ ] **2.5 Turn error codes, with state left unchanged.**
+- [x] **2.5 Turn error codes, with state left unchanged.**
       Files: `backend/app.py`, `backend/tests/test_api.py`.
       `unknown_action` (unknown id **or missing `action`**, §5.4), `insufficient_ki`,
       `already_ascended`, `match_over` (409), in the A6 precedence order.

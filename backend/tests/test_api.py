@@ -419,6 +419,151 @@ def test_a_turn_on_an_unknown_match_is_a_404(client):
     assert response.get_json()["error"]["code"] == "match_not_found"
 
 
+# --- Rejected turns (§5.4) --------------------------------------------------
+
+
+def reject(client, match_id, body, code, status=400):
+    """Submit ``body`` as a turn, assert it fails with ``code``, and assert the
+    match is byte-identical to what it was before the attempt."""
+    before = client.get(f"/api/match/{match_id}")
+
+    response = client.post(f"/api/match/{match_id}/turn", json=body)
+
+    assert response.status_code == status, response.get_json()
+    assert response.get_json()["error"]["code"] == code
+    assert client.get(f"/api/match/{match_id}").get_data() == before.get_data()
+    return response.get_json()["error"]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"action": "punch"},
+        {"action": "Strike"},
+        {"action": ""},
+        {"action": None},
+        {"action": 7},
+        {},
+    ],
+    ids=["unknown", "wrong-case", "empty", "null", "non-string", "missing"],
+)
+def test_an_action_that_is_not_one_of_the_six_is_rejected(client, body):
+    match_id = seeded(client, 1)
+
+    reject(client, match_id, body, "unknown_action")
+
+
+def test_an_empty_body_is_an_unknown_action(client):
+    match_id = seeded(client, 1)
+    before = client.get(f"/api/match/{match_id}")
+
+    response = client.post(f"/api/match/{match_id}/turn")
+
+    assert response.status_code == 400
+    assert response.get_json()["error"]["code"] == "unknown_action"
+    assert client.get(f"/api/match/{match_id}").get_data() == before.get_data()
+
+
+def test_surge_beam_below_forty_ki_is_rejected(client):
+    match_id = seeded(client, 2)
+    # A fresh fighter holds 30 ki (§2.1), so the 40-ki beam is unaffordable.
+    error = reject(client, match_id, {"action": "surge_beam"}, "insufficient_ki")
+
+    assert "40" in error["message"]
+    assert "30" in error["message"]
+
+
+def test_ascend_below_forty_ki_is_rejected(client):
+    match_id = seeded(client, 3)
+
+    reject(client, match_id, {"action": "ascend"}, "insufficient_ki")
+
+
+def test_a_second_ascend_is_rejected_and_changes_nothing(client):
+    app = create_app()
+    api = app.test_client()
+    match_id = api.post(
+        "/api/match",
+        json={"player_fighter": "kaito", "opponent_fighter": "vega", "seed": 4},
+    ).get_json()["match_id"]
+
+    # Charge to 40+ ki, ascend for real, then charge back above the cost so the
+    # only thing standing in the way of a second Ascend is ``ascend_used``.
+    app.extensions["matches"][match_id]["state"]["player"]["ki"] = 40
+    ascended = advance(app, match_id, "ascend")
+    assert ascended["player"]["ascended"] is True
+    assert ascended["player"]["ascend_used"] is True
+
+    # ``resolve_turn`` hands back a new state object, so re-read the store.
+    stored = app.extensions["matches"][match_id]["state"]
+    stored["player"]["ki"] = 100
+
+    reject(api, match_id, {"action": "ascend"}, "already_ascended")
+
+    assert stored["player"]["ki"] == 100
+    assert stored["player"]["ascended"] is True
+
+
+def test_already_ascended_outranks_insufficient_ki(client):
+    """A6: an Ascend that is both used up *and* unaffordable reports the former."""
+    app = create_app()
+    api = app.test_client()
+    match_id = api.post(
+        "/api/match", json={"player_fighter": "kaito", "opponent_fighter": "vega"}
+    ).get_json()["match_id"]
+
+    player = app.extensions["matches"][match_id]["state"]["player"]
+    player["ascend_used"] = True
+    player["ki"] = 0
+
+    reject(api, match_id, {"action": "ascend"}, "already_ascended")
+
+
+@pytest.mark.parametrize("status", ["player_won", "opponent_won", "draw"])
+def test_a_turn_on_a_finished_match_is_a_409(client, status):
+    app = create_app()
+    api = app.test_client()
+    match_id = api.post(
+        "/api/match", json={"player_fighter": "kaito", "opponent_fighter": "vega"}
+    ).get_json()["match_id"]
+    app.extensions["matches"][match_id]["state"]["status"] = status
+
+    reject(api, match_id, {"action": "strike"}, "match_over", status=409)
+
+
+def test_match_over_outranks_a_bad_action(client):
+    """A6: status is checked before the action is even looked at."""
+    app = create_app()
+    api = app.test_client()
+    match_id = api.post(
+        "/api/match", json={"player_fighter": "kaito", "opponent_fighter": "vega"}
+    ).get_json()["match_id"]
+    app.extensions["matches"][match_id]["state"]["status"] = "player_won"
+
+    reject(api, match_id, {"action": "not_a_move"}, "match_over", status=409)
+    reject(api, match_id, {}, "match_over", status=409)
+
+
+def test_match_not_found_outranks_everything(client):
+    """A6: an unknown match id is a 404 even with a garbage action."""
+    response = client.post(f"/api/match/{uuid.uuid4().hex}/turn", json={"action": "nope"})
+
+    assert response.status_code == 404
+    assert response.get_json()["error"]["code"] == "match_not_found"
+
+
+def test_a_rejected_turn_leaves_the_match_playable(client):
+    """The UI must not be wedged by a bad request: the next legal turn works."""
+    match_id = seeded(client, 5)
+    reject(client, match_id, {"action": "surge_beam"}, "insufficient_ki")
+
+    state = client.post(
+        f"/api/match/{match_id}/turn", json={"action": "strike"}
+    ).get_json()
+
+    assert state["turn"] == 1
+
+
 def test_the_route_resolves_the_turn_the_rules_would(client):
     """The route adds no rule of its own: same seed, same actions, same result."""
     app = create_app()

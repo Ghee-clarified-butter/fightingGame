@@ -16,6 +16,7 @@ from flask import Flask, jsonify, request
 
 from game import rules
 from game.fighters import UnknownFighterError
+from game.moves import MOVES
 
 
 def _error(code: str, message: str, status: int):
@@ -59,6 +60,48 @@ def _parse_seed(payload: dict):
             400,
         )
     return seed, None
+
+
+def _validate_action(state: dict, action):
+    """Return an error response for ``action``, or ``None`` if it is playable.
+
+    The checks run in a fixed precedence so a request that is wrong in more than
+    one way always reports the same code: ``match_over`` → ``unknown_action`` →
+    ``already_ascended`` → ``insufficient_ki``. Status comes first because a
+    finished match accepts nothing at all; ``already_ascended`` comes before the
+    ki check because being out of Ascends is the more specific reason, and it
+    stays true no matter how much ki the fighter later charges up.
+    """
+    if state["status"] != rules.STATUS_IN_PROGRESS:
+        return _error(
+            "match_over",
+            f"This match is already over ({state['status']}).",
+            409,
+        )
+
+    if action not in MOVES:
+        # A missing ``action`` lands here too, by §5.4.
+        return _error("unknown_action", f"Unknown action: {action!r}.", 400)
+
+    move = MOVES[action]
+    player = state["player"]
+
+    if action == "ascend" and player["ascend_used"]:
+        return _error(
+            "already_ascended",
+            f"{player['name']} has already ascended this match.",
+            400,
+        )
+
+    if player["ki"] < move["cost"]:
+        return _error(
+            "insufficient_ki",
+            f"{move['name']} costs {move['cost']} ki; "
+            f"{player['name']} has {player['ki']}.",
+            400,
+        )
+
+    return None
 
 
 def create_app() -> Flask:
@@ -114,6 +157,10 @@ def create_app() -> Flask:
 
         payload = request.get_json(silent=True) or {}
         action = payload.get("action")
+
+        error = _validate_action(match["state"], action)
+        if error is not None:
+            return error
 
         # ``play_turn`` draws the opponent's move itself, and only after this
         # point — so a turn rejected above never advances the match RNG (§4.7).
