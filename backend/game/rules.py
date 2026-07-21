@@ -119,6 +119,23 @@ def roll_turn_order(state: dict, rng) -> tuple[str, str]:
     return ("player", "opponent") if rng.random() < 0.5 else ("opponent", "player")
 
 
+def deterministic_order(state: dict) -> tuple[str, str]:
+    """Return the resolution order without ever flipping a coin (extension B6).
+
+    Identical to ``roll_turn_order`` except that a tie resolves to
+    ``("player", "opponent")`` instead of drawing. The expectimax search needs an
+    order for positions it explores on copies of the state, and E3.4 forbids it
+    from touching the live match RNG — so it needs a tie-break that costs no
+    draw. This is deliberately *not* what the live match uses: §4.4's flip stays
+    random, and only the search calls this.
+    """
+    player_spd = effective_spd(state["player"])
+    opponent_spd = effective_spd(state["opponent"])
+    if opponent_spd > player_spd:
+        return ("opponent", "player")
+    return ("player", "opponent")
+
+
 def choose_opponent_action(state: dict, rng) -> str:
     """Return the opponent's move for this turn (§4.7).
 
@@ -192,16 +209,23 @@ SPREAD_MAX = 1.10
 _OTHER_SIDE = {"player": "opponent", "opponent": "player"}
 
 
-def _apply_attack(attacker: dict, defender: dict, action: str, rng) -> int:
+def _apply_attack(
+    attacker: dict, defender: dict, action: str, rng, spread: float | None = None
+) -> int:
     """Resolve one attack and return the damage dealt (§4.1, §4.2, §4.4 step 4).
 
     The ki cost is paid first, before damage is computed (§4.2). The spread is
     drawn here rather than by ``compute_damage`` so the draw happens exactly
     once per attack that actually resolves — §4.8 forbids dummy draws.
+
+    When ``spread`` is supplied it is used as-is and **no** draw happens, so a
+    caller exploring hypothetical turns never advances the live match RNG
+    (E3.4, B6). ``rng`` is not touched at all on that path and may be ``None``.
     """
     move = MOVES[action]
     attacker["ki"] -= move["cost"]
-    spread = rng.uniform(SPREAD_MIN, SPREAD_MAX)
+    if spread is None:
+        spread = rng.uniform(SPREAD_MIN, SPREAD_MAX)
     damage = compute_damage(attacker, defender, move["power"], spread)
     defender["hp"] = max(0, defender["hp"] - damage)
     return damage
@@ -293,6 +317,7 @@ def resolve_turn(
     rng,
     *,
     order: tuple[str, str] | None = None,
+    spread: float | None = None,
 ) -> tuple[dict, list[dict]]:
     """Resolve one turn and return ``(new_state, entries)`` (§4.4, §6).
 
@@ -303,6 +328,12 @@ def resolve_turn(
     the opponent's move choice, so the app layer rolls the order first and
     passes it in; when it is ``None`` this rolls one itself, which keeps a
     single-turn unit test to one call.
+
+    ``spread`` is keyword-only too. When it is given, every attack this turn uses
+    that fixed value and nothing is drawn — which is how the expectimax search
+    enumerates its chance node without ever being handed the live match RNG
+    (E3.4, B6). Combined with an explicit ``order`` this makes the whole call
+    RNG-free, so ``rng`` may then be ``None``.
 
     Both actions are assumed already validated (§4.4 step 1); validation is the
     HTTP layer's job (§5.4).
@@ -340,7 +371,7 @@ def resolve_turn(
             # A8: only the attack is skipped. A fighter KO'd before its turn to
             # swing still logs the Charge/Guard/Ascend it already resolved.
             continue
-        damage = _apply_attack(attacker, defender, action, rng) if is_attack else 0
+        damage = _apply_attack(attacker, defender, action, rng, spread) if is_attack else 0
         entries.append(
             _log_entry(turn, side, action, attacker, defender, damage, ki_gained[side])
         )

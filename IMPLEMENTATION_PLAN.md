@@ -181,7 +181,7 @@ installed is the whole stack.
   `difficulty` field reports `"random"`. This and 1.1 are the **only** Step 1 tests permitted to
   change (E4.1); note in the commit that the failure was the contract revision, not a regression.
 
-- [ ] **1.3 — Let `resolve_turn` take a fixed spread, and add `deterministic_order`.**
+- [x] **1.3 — Let `resolve_turn` take a fixed spread, and add `deterministic_order`.**
   Files: `backend/game/rules.py` (B6: keyword-only `spread`; `_apply_attack` takes the spread rather
   than drawing when one is supplied; new `deterministic_order(state)`).
   Tests: `test_rules.py` — with `spread=1.0` the damage equals the formula computed by hand for both

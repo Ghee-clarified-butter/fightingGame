@@ -12,6 +12,7 @@ from game.rules import (
     check_status,
     choose_opponent_action,
     compute_damage,
+    deterministic_order,
     effective_spd,
     legal_actions,
     new_match,
@@ -553,6 +554,109 @@ def test_a_turn_without_attacks_consumes_no_spread_draw():
     before = rng.getstate()
     resolve_turn(_match_with(), "charge", "guard", rng, order=("player", "opponent"))
     assert rng.getstate() == before
+
+
+def test_the_default_path_draws_exactly_one_spread_per_resolved_attack():
+    """Two attacks that both land are draws #3 and #4 of §4.8, and nothing more."""
+    rng = random.Random(11)
+    probe = random.Random(11)
+    probe.uniform(0.90, 1.10)
+    probe.uniform(0.90, 1.10)
+    resolve_turn(_match_with(), "strike", "strike", rng, order=("player", "opponent"))
+    assert rng.getstate() == probe.getstate()
+
+
+# --- 1.10 fixed spreads and deterministic order (extension B6, E3.4) ---------
+#
+# The expectimax search explores turns on copies of the state and must never be
+# handed the live match RNG, so resolve_turn has to be able to resolve a turn
+# with no draws at all.
+
+
+def test_a_supplied_spread_is_used_verbatim_for_both_attackers():
+    """Damage matches the §4.1 formula computed by hand at spread 1.00."""
+    match = _match_with()
+    new_state, _ = resolve_turn(
+        match, "strike", "ki_blast", None, order=("player", "opponent"), spread=1.0
+    )
+    # Kaito: 14 * 22/(22+14) = 8.555... -> 9
+    assert new_state["opponent"]["hp"] == 130 - 9
+    # Vega: 26 * 16/(16+8) = 17.333... -> 17
+    assert new_state["player"]["hp"] == 100 - 17
+
+
+def test_a_supplied_spread_scales_the_damage_it_is_given():
+    """The value is the spread itself, not an index into a sample table."""
+    match = _match_with()
+    low, _ = resolve_turn(
+        match, "strike", "charge", None, order=("player", "opponent"), spread=0.90
+    )
+    high, _ = resolve_turn(
+        match, "strike", "charge", None, order=("player", "opponent"), spread=1.10
+    )
+    assert 130 - low["opponent"]["hp"] == compute_damage(
+        match["player"], match["opponent"], 14, 0.90
+    )
+    assert 130 - high["opponent"]["hp"] == compute_damage(
+        match["player"], match["opponent"], 14, 1.10
+    )
+
+
+def test_a_supplied_spread_consumes_no_draw():
+    match = _match_with()
+    rng = random.Random(4)
+    before = rng.getstate()
+    resolve_turn(match, "strike", "strike", rng, order=("player", "opponent"), spread=1.0)
+    assert rng.getstate() == before
+
+
+def test_a_supplied_spread_and_order_make_the_whole_turn_rng_free():
+    """E3.4: the search passes rng=None, so no code path may touch it."""
+    match = _match_with()
+    new_state, entries = resolve_turn(
+        match, "surge_beam", "strike", None, order=("opponent", "player"), spread=1.0
+    )
+    assert len(entries) == 2
+    assert new_state["turn"] == 1
+
+
+def test_a_supplied_spread_applies_to_every_attack_in_the_turn():
+    """One value covers the turn, so both sides take formula damage at 1.10."""
+    match = _match_with()
+    new_state, _ = resolve_turn(
+        match, "strike", "strike", None, order=("player", "opponent"), spread=1.10
+    )
+    assert 130 - new_state["opponent"]["hp"] == compute_damage(
+        match["player"], match["opponent"], 14, 1.10
+    )
+    assert 100 - new_state["player"]["hp"] == compute_damage(
+        match["opponent"], match["player"], 14, 1.10
+    )
+
+
+def test_deterministic_order_breaks_a_tie_towards_the_player():
+    match = new_match("kaito", "kaito")
+    assert deterministic_order(match) == ("player", "opponent")
+
+
+def test_deterministic_order_agrees_with_the_roll_when_speeds_differ():
+    assert deterministic_order(new_match("kaito", "vega")) == ("player", "opponent")
+    assert deterministic_order(new_match("vega", "kaito")) == ("opponent", "player")
+
+
+def test_deterministic_order_counts_the_ascend_speed_bonus():
+    match = new_match("kaito", "vega")
+    match["opponent"]["ascended"] = True  # 9 + 5 = 14, tying Kaito
+    assert deterministic_order(match) == ("player", "opponent")
+    match["player"]["spd"] = 13
+    assert deterministic_order(match) == ("opponent", "player")
+
+
+def test_deterministic_order_takes_no_rng_and_does_not_mutate_the_state():
+    match = new_match("kaito", "kaito")
+    before = copy.deepcopy(match)
+    deterministic_order(match)
+    assert match == before
 
 
 # --- 1.9 log entries and the turn counter (§4.4 step 6, §5.5; A7, A8) --------
