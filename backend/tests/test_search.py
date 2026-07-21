@@ -384,7 +384,7 @@ def test_the_search_takes_no_generator_at_all():
     """Structural, not a promise: there is no parameter to hand the match RNG to."""
     parameters = inspect.signature(choose).parameters
     assert "rng" not in parameters
-    assert list(parameters) == ["state", "side", "depth", "candidates"]
+    assert list(parameters) == ["state", "side", "depth", "candidates", "opponent_policy"]
 
 
 def test_selecting_at_the_search_difficulty_consumes_no_rng():
@@ -399,32 +399,34 @@ def test_selecting_at_the_search_difficulty_consumes_no_rng():
 # --- The cap is applied at the root, by game.ai (E2.1, E3) -------------------
 
 
-def _guard_preferring_position(streak: int = 0) -> dict:
-    """A position the search answers with Guard when it is free to choose.
+def _charge_preferring_position(streak: int = 0) -> dict:
+    """A position the search answers with Charge when it is free to choose.
 
-    Kaito is at full hp with a full ki pool, so a Surge Beam is coming; Vega is at
-    30 of 130 and survives it behind a Guard. Exactly the shape E2.1 calls out —
-    "guard when about to die" is the condition that can recur forever.
+    Both fighters sit at 20 ki: too little to afford Surge Beam (40) and one turn
+    short of a second Ki Blast, so the search — modelling the foe as its heuristic
+    (E3.1) — values spending a turn to Charge toward real offense over throwing a
+    weak Strike now. A passive move the search picks on its own is what E2.1's cap
+    then has to override, so it is the right vehicle for the cap tests.
     """
     return _match_with(
-        player={"hp": 100, "ki": 100},
-        opponent={"hp": 30, "ki": 100, "passive_streak": streak},
+        player={"hp": 100, "ki": 20},
+        opponent={"hp": 100, "ki": 20, "passive_streak": streak},
     )
 
 
-def test_the_search_alone_would_guard_here():
-    assert choose(_guard_preferring_position(), "opponent") == "guard"
+def test_the_search_alone_would_charge_here():
+    assert choose(_charge_preferring_position(), "opponent") == "charge"
 
 
 def test_the_root_cap_forces_an_attack_after_two_passive_turns():
     """E2.1 outranks the search exactly as it outranks the heuristic's rule 2."""
-    action = choose_action(_guard_preferring_position(streak=2), "opponent", "search")
+    action = choose_action(_charge_preferring_position(streak=2), "opponent", "search")
     assert MOVES[action]["is_attack"]
-    assert choose_action(_guard_preferring_position(streak=0), "opponent", "search") == "guard"
+    assert choose_action(_charge_preferring_position(streak=0), "opponent", "search") == "charge"
 
 
 def test_two_consecutive_passive_turns_are_still_allowed():
-    assert choose_action(_guard_preferring_position(streak=1), "opponent", "search") == "guard"
+    assert choose_action(_charge_preferring_position(streak=1), "opponent", "search") == "charge"
 
 
 def test_the_search_itself_never_reads_the_streak():
@@ -432,7 +434,7 @@ def test_the_search_itself_never_reads_the_streak():
     must be blind to ``passive_streak`` — otherwise a line would be pruned inside
     the search for a rule that binds one single move."""
     for streak in (0, 2, 5):
-        assert choose(_guard_preferring_position(streak), "opponent") == "guard"
+        assert choose(_charge_preferring_position(streak), "opponent") == "charge"
 
 
 def test_search_is_a_registered_difficulty_in_the_specs_order():
@@ -460,37 +462,39 @@ def _count_children(state: dict, side: str, monkeypatch) -> dict[bool, int]:
     return counts
 
 
-#: The exact tree of a full-hp/full-ki depth-2 selection.
+#: The exact tree of a full-hp/full-ki depth-2 selection under the opponent-model
+#: node (E3.1): the foe answers with the *single* move its heuristic would play,
+#: not with all of its legal moves, so the branching is a fraction of the old
+#: adversarial tree.
 #:
-#: Root: 36 action pairs; 27 contain an attack and branch three ways on the
-#: spread, 9 are attack-free and yield one child (E3.2) — 27*3 + 9 = **90**.
+#: Root: the searching side has 6 legal moves and the foe contributes exactly one
+#: (its heuristic reply). At full hp and full ki that reply is passive (Ascend),
+#: so the 3 pairs whose *own* move attacks branch three ways on the spread and the
+#: 3 passive-own pairs yield one child — 3*3 + 3 = **12**.
 #:
-#: Second ply: 36 pairs per child, mean sample only, **except** that Ascend is
-#: spent at the root. A child in which one side ascended offers that side 5 moves,
-#: not 6. Summing over the root pairs: 2412 leaves from the 25 ascend-free pairs,
-#: 330 + 330 from the two single-ascend groups, 25 from the double-ascend pair —
-#: **3097**. B7's 90 * 36 = 3240 ignores the spent Ascend and over-counts by 143;
-#: it stands as an upper bound, as does E3.5's own 3,888.
-ROOT_CHILDREN = 90
-LEAVES = 3097
+#: Second ply: mean sample only, so one child per legal pair, summed over the 12
+#: root children with Ascend spent where it was taken — **71** in total.
+#:
+#: Both stay far under E3.5's "three-way at root, one-way deeper" ceilings, which
+#: were derived for the adversarial tree and remain valid upper bounds.
+ROOT_CHILDREN = 12
+LEAVES = 71
 E3_5_ROOT_CEILING = 108
 E3_5_LEAF_CEILING = 3888
 
 
-def test_the_worst_case_tree_is_exactly_ninety_root_children_and_3097_leaves(monkeypatch):
+def test_the_worst_case_tree_is_exactly_twelve_root_children_and_71_leaves(monkeypatch):
     counts = _count_children(_worst_case_position(), "opponent", monkeypatch)
     assert counts[True] == ROOT_CHILDREN
     assert counts[False] == LEAVES
 
 
 def test_the_tree_stays_inside_the_cost_bound(monkeypatch):
-    """E3.5's table is an upper bound: three-way at the root, one-way deeper."""
+    """E3.5's ceilings are upper bounds; the opponent-model tree sits well under
+    them because the foe contributes one modelled move, not all of its legal ones."""
     counts = _count_children(_worst_case_position(), "player", monkeypatch)
     assert counts[True] <= E3_5_ROOT_CEILING
     assert counts[False] <= E3_5_LEAF_CEILING
-    # Had every ply branched three ways the leaf count would be 3x this and the
-    # 150 ms budget would be unmeetable, which is why E3.2 restricts it.
-    assert counts[False] * 3 > E3_5_LEAF_CEILING
 
 
 def test_legal_move_filtering_shrinks_the_tree(monkeypatch):

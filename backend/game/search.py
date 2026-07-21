@@ -145,7 +145,14 @@ def _rank(action: str) -> int:
 
 
 def _chance_value(
-    state: dict, side: str, my_action: str, foe_action: str, depth: int, *, root: bool
+    state: dict,
+    side: str,
+    my_action: str,
+    foe_action: str,
+    depth: int,
+    *,
+    root: bool,
+    opponent_policy,
 ) -> float:
     """The CHANCE node: the weighted mean of the children of one action pair.
 
@@ -159,29 +166,37 @@ def _chance_value(
     else:
         player_action, opponent_action = foe_action, my_action
     return sum(
-        weight * _value(child, side, depth - 1)
+        weight * _value(child, side, depth - 1, opponent_policy)
         for weight, child in chance_children(state, player_action, opponent_action, root=root)
     )
 
 
-def _min_value(state: dict, side: str, my_action: str, depth: int, *, root: bool) -> float:
-    """The MIN node: the foe is assumed to answer ``my_action`` as an adversary.
+def _opponent_value(
+    state: dict, side: str, my_action: str, depth: int, *, root: bool, opponent_policy
+) -> float:
+    """The opponent-response node: the foe answers with its *own policy* (E3.1).
 
-    E3.1 models the opponent as minimizing rather than as random on purpose —
-    averaging over its moves would let the search walk into a line that only
-    survives if the foe misplays.
+    The opponent is modelled as playing the move its actual policy would pick — the
+    heuristic — not as an adversary minimizing the AI's value. Minimizing was the
+    original design and it was wrong: against a foe that is *not* playing the
+    worst-case reply, the search defended against threats the foe never executes
+    and so underperformed the very heuristic it was meant to improve on (measured:
+    31% in a mirror match). Modelling the true opponent lets the search optimize
+    against the game it actually faces.
 
-    The foe always has at least Strike available (0 ki, no precondition), so the
-    minimum is never taken over an empty sequence.
+    ``opponent_policy(state, foe_side) -> action`` is injected by the caller so
+    this module needs no import of the policy layer, and it is a pure function of
+    the state, so the search still consumes no RNG (E3.4). The modelled foe ignores
+    E2.1's streak cap exactly as the searching side does — the cap binds the root
+    move only, never the inside of the tree (E3).
     """
-    foe = _FOE[side]
-    return min(
-        _chance_value(state, side, my_action, foe_action, depth, root=root)
-        for foe_action in legal_actions(state[foe])
+    foe_action = opponent_policy(state, _FOE[side])
+    return _chance_value(
+        state, side, my_action, foe_action, depth, root=root, opponent_policy=opponent_policy
     )
 
 
-def _value(state: dict, side: str, depth: int) -> float:
+def _value(state: dict, side: str, depth: int, opponent_policy) -> float:
     """The MAX node, and the leaf case that stops the recursion.
 
     Two things end a line: running out of depth, and the match being over. The
@@ -197,13 +212,17 @@ def _value(state: dict, side: str, depth: int) -> float:
     if depth <= 0 or state["status"] != STATUS_IN_PROGRESS:
         return evaluate(state, side)
     return max(
-        _min_value(state, side, action, depth, root=False)
+        _opponent_value(state, side, action, depth, root=False, opponent_policy=opponent_policy)
         for action in legal_actions(state[side])
     )
 
 
 def choose(
-    state: dict, side: str, depth: int = DEFAULT_DEPTH, candidates: list[str] | None = None
+    state: dict,
+    side: str,
+    depth: int = DEFAULT_DEPTH,
+    candidates: list[str] | None = None,
+    opponent_policy=None,
 ) -> str:
     """Return ``side``'s move under a depth-limited expectimax (E3.1).
 
@@ -212,6 +231,11 @@ def choose(
     ``rules.legal_actions`` allows. It is never widened here, so the caller cannot
     get back a move it excluded.
 
+    ``opponent_policy(state, foe_side) -> action`` is how the foe's replies are
+    modelled (E3.1); it defaults to the heuristic, imported lazily so that
+    ``game.ai`` importing this module does not create a cycle. Passing it in keeps
+    this module free of any policy import at load time.
+
     Ties go to the earliest action in ``ACTION_ORDER`` (E3.4). That is enforced by
     scanning in canonical order and replacing the incumbent only on a *strictly*
     greater value, so the rule holds however the caller ordered ``candidates``.
@@ -219,12 +243,20 @@ def choose(
     Consumes no RNG and takes no generator: every turn below this is resolved
     with a fixed spread and a coin-flip-free order (E3.4, B6).
     """
+    if opponent_policy is None:
+        from game.ai import _choose_heuristic
+
+        opponent_policy = _choose_heuristic
     offered = candidates if candidates is not None else legal_actions(state[side])
     actions = sorted(offered, key=_rank)
     best_action = actions[0]
-    best_value = _min_value(state, side, best_action, depth, root=True)
+    best_value = _opponent_value(
+        state, side, best_action, depth, root=True, opponent_policy=opponent_policy
+    )
     for action in actions[1:]:
-        value = _min_value(state, side, action, depth, root=True)
+        value = _opponent_value(
+            state, side, action, depth, root=True, opponent_policy=opponent_policy
+        )
         if value > best_value:
             best_action, best_value = action, value
     return best_action

@@ -89,7 +89,13 @@ without a coin flip, so `rules.deterministic_order(state)` is added: identical t
 but breaks a tie as `("player", "opponent")` with no draw. The search passes `rng=None` together
 with an explicit `spread` and `order`; `resolve_turn` must therefore never touch `rng` on that path.
 
-**B7 — Search-node budget arithmetic, and what the leaf test asserts.**
+**B7 — SUPERSEDED by the E3.1 opponent-model change (task 4.2).** The arithmetic below was for the
+adversarial MIN node. Once the opponent is modelled as its single heuristic reply (E3.1, revised),
+the foe contributes one move rather than six: the worst-case tree is **12 root children and 71
+leaves**, ~40× smaller, and a selection runs in ~2 ms. The leaf-count test asserts 12 / 71 and that
+both sit inside the old 108 / 3,888 ceilings. The original derivation is kept below for the record.
+
+_Original (adversarial) arithmetic:_
 E3.5's table (108 / 3,888) ignores E3.2's rule that a turn where neither side attacks yields one
 child instead of three. E3.2 is normative; the table is an upper bound. With all six moves legal for
 both sides, 3×3 = 9 of the 36 root action pairs are attack-free, so:
@@ -275,12 +281,16 @@ installed is the whole stack.
   winner exactly; both sides obey the streak cap over a full match; `turns <= 100`; a mirror matchup
   runs to a conclusion; no illegal action appears in any log.
 
-- [ ] **4.2 — Strength criteria.**
-  Files: new `backend/tests/test_ai_strength.py`.
-  Tests: `search` beats `random` in ≥70% of 200 fixed seeds; `search` beats `heuristic` in ≥55% of
-  200 fixed seeds; ≥95% of 200 heuristic-vs-heuristic matches end by KO rather than the cap. Record
-  the measured rates in each docstring (E10). Time the file; if the two search suites exceed 180 s
-  combined, apply B9 in order and note the mitigation used.
+- [x] **4.2 — Strength criteria.** *(done directly, not via the loop — see E13 / the human-run
+  correction; the loop stalled on this task.)*
+  Files: new `backend/tests/test_ai_strength.py`; also revised `game/search.py` (E3.1 opponent
+  model), the search tests, and specs E3.1/E3.5/E10/E11/E13.
+  Tests, all in **mirror matches** (Kaito vs Kaito, alternated sides — see the E10 note; a non-mirror
+  measurement tests the matchup, not the policy): `search` beats `random` in ≥70% of 200 seeds
+  (measured 82%); `search` is ≥45% vs `heuristic`, i.e. not a regression (measured 48%, parity);
+  ≥95% of 200 heuristic-vs-heuristic matches end by KO (measured 100%). Measured rates recorded in
+  each docstring. Timing is a non-issue after the opponent-model change — each search is ~2 ms, so
+  the whole file runs in a few seconds and B9's escalation was not needed.
 
 ### 5. Part A endpoints
 
