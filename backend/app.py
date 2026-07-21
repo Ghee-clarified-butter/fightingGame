@@ -14,6 +14,7 @@ import uuid
 
 from flask import Flask, jsonify, request
 
+import db
 from game import ai, rules
 from game.fighters import UnknownFighterError
 from game.moves import MOVES
@@ -125,8 +126,16 @@ def _validate_action(state: dict, action):
     return None
 
 
-def create_app() -> Flask:
-    """Build the Flask app and its in-memory match store (§6)."""
+def create_app(database_url: str | None = None) -> Flask:
+    """Build the Flask app and its in-memory match store (§6).
+
+    A tournament database engine is bootstrapped alongside the in-memory match
+    store: the schema is created on startup if it is absent (E6), so a fresh
+    clone works with no migration step. ``database_url`` overrides the location
+    (the default resolves through :func:`db.resolve_url`), which is what lets a
+    test point the app at a temp file instead of the real database. Single
+    matches stay ephemeral in ``matches``; only tournaments persist (E6).
+    """
     app = Flask(__name__)
 
     # match_id (UUID4 hex) -> {"state": <rules state>, "rng": <match RNG>}.
@@ -135,6 +144,13 @@ def create_app() -> Flask:
     # generator, in the §4.8 order.
     matches: dict[str, dict] = {}
     app.extensions["matches"] = matches
+
+    # The engine and session factory live on the app so later tournament
+    # endpoints (task 9) open a request-scoped session without a global.
+    engine = db.make_engine(database_url)
+    db.init_db(engine)
+    app.extensions["db_engine"] = engine
+    app.extensions["db_session_factory"] = db.make_session_factory(engine)
 
     @app.post("/api/match")
     def create_match():

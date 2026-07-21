@@ -325,7 +325,7 @@ installed is the whole stack.
 
 ### 7. Persistence layer
 
-- [ ] **7.1 — Dependency, engine and schema bootstrap.**
+- [x] **7.1 — Dependency, engine and schema bootstrap.**
   Files: `backend/requirements.txt` (`SQLAlchemy>=2.0.36,<2.1`, B13), new `backend/db.py` (engine for
   `backend/data/fightinggame.db`, `sessionmaker`, `init_db(engine)`, and a `DATABASE_URL` override so
   tests can point at a temp file or `sqlite+pysqlite:///:memory:`), `script/setup` (create

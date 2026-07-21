@@ -23,6 +23,12 @@ if [ -f backend/requirements.txt ]; then
   fi
   "$VENV_PY" -m pip install --upgrade pip >/dev/null
   "$VENV_PY" -m pip install -r backend/requirements.txt
+
+  # Create the tournament database directory and schema (extension E6). Idempotent:
+  # init_db issues CREATE TABLE IF NOT EXISTS, so re-running setup never clobbers data.
+  echo "==> Database schema"
+  mkdir -p backend/data
+  "$VENV_PY" -c "import sys; sys.path.insert(0, 'backend'); import db; db.init_db(db.make_engine())"
 else
   echo "backend/requirements.txt not found yet - skipping (created during the build stage)."
 fi
