@@ -377,7 +377,7 @@ Not used: `flask-cors` (see A9), `requests`, any state/fetch library.
       `running.md` with the real setup/run/test instructions and a short "how to play" note.
       No automated test — this is the one criterion that requires a browser. Record the result.
 
-- [ ] **4.2 Final acceptance sweep.**
+- [x] **4.2 Final acceptance sweep.**
       Files: none (verification only).
       Walk §8's checklist item by item and name the test that proves each one; every item must map to
       a real assertion (or, for the single browser item, to 4.1). Confirm `./script/test` passes with
