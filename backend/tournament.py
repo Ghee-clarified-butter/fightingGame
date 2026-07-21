@@ -6,29 +6,63 @@ Nothing below it knows about SQLAlchemy; nothing here knows about HTTP. The app
 layer stays validation → this service → serialize (B12), so a request handler
 never builds a bracket or picks a match itself.
 
-Task 8.1 is creation only: build the **entire** bracket up front — every round,
-later ones ``pending`` — pre-resolve byes to a winner without playing them, and
-reject a roster, fighter, difficulty or seed the bracket cannot be built from.
-Advancing matches and serializing the bracket land in the following tasks.
+Task 8.1 built the whole bracket at creation; task 8.2 (``advance``) plays the
+next ready match AI-vs-AI at its derived seed, replays a drawn attempt rather
+than awarding it (E7.4), promotes the winner one round forward, and completes the
+tournament when the final resolves. Serializing the bracket lands in task 8.3.
 """
 
+import json
 import uuid
 
-from game import ai, bracket
+from game import ai, arena, bracket
 from game.fighters import FIGHTERS, UnknownFighterError
 
 import models
 
-#: Tournament lifecycle states (E6.1). A freshly created bracket is ``pending``
-#: until its first match is advanced; ``advance`` (task 8.2) drives the rest.
+#: Tournament lifecycle states (E6.1, E7.4). A freshly created bracket is
+#: ``pending``; the first ``advance`` moves it to ``in_progress``; it reaches
+#: ``complete`` when the final resolves, or ``stalled`` if a match draws out.
 STATUS_PENDING = "pending"
+STATUS_IN_PROGRESS = "in_progress"
+STATUS_COMPLETE = "complete"
+STATUS_STALLED = "stalled"
 
-#: Per-match lifecycle states (E6.1, E7.1). ``ready`` = both fighters known and
-#: the match can be played; ``pending`` = at least one side still undetermined;
-#: ``bye`` = a single-entrant slot, pre-resolved and never played.
+#: Per-match lifecycle states (E6.1, E7.1, E7.4). ``ready`` = both fighters known
+#: and the match can be played; ``pending`` = at least one side still
+#: undetermined; ``bye`` = a single-entrant slot, pre-resolved and never played;
+#: ``complete`` = a decisive attempt was recorded; ``drawn_out`` = every one of
+#: the ``MAX_ATTEMPTS`` attempts drew (E7.4), so no winner was ever awarded.
 MATCH_READY = "ready"
 MATCH_PENDING = "pending"
 MATCH_BYE = "bye"
+MATCH_COMPLETE = "complete"
+MATCH_DRAWN_OUT = "drawn_out"
+
+#: Hard cap on replayed drawn attempts before a match is abandoned (E7.4, B10).
+#: A drawn slot is replayed at ``attempt + 1`` until decisive; ten draws in a row
+#: at ten different seeds should be unreachable (E10 requires ≥95% KO), but an
+#: unbounded retry loop inside a request handler is not acceptable.
+MAX_ATTEMPTS = 10
+
+
+class TournamentComplete(Exception):
+    """Raised by :func:`advance` when the final has already resolved (E8).
+
+    The HTTP layer maps this to ``409 tournament_complete`` (task 9.2). A
+    ``stalled`` tournament is *not* complete — it raises :class:`NoReadyMatch`
+    instead, because a stall means no more matches can ever be played, not that a
+    champion was crowned.
+    """
+
+
+class NoReadyMatch(Exception):
+    """Raised by :func:`advance` when no ``ready`` match is available (E8).
+
+    Either every remaining match is still ``pending`` on an undetermined fighter,
+    or the tournament has ``stalled`` (E7.4). The HTTP layer maps this to
+    ``409 no_ready_match`` (task 9.2).
+    """
 
 
 class InvalidSeedError(ValueError):
@@ -83,29 +117,29 @@ def _new_match(tournament_id: str, round_: int, slot: int) -> models.TournamentM
     )
 
 
-def _propagate(matches: dict, round_: int, slot: int, winner_id, winner_seed) -> None:
+def _propagate(matches: dict, round_: int, slot: int, winner_id, winner_seed):
     """Seat the winner of ``(round_, slot)`` into its parent slot (E7.2).
 
-    Used at creation to carry a **bye** winner one round forward, since a bye is
-    never played and so ``advance`` (task 8.2) never touches it — a round-2 slot
-    fed entirely by byes would otherwise never learn its fighters and never
-    become ready. The winner takes side A on an even slot and B on an odd one,
-    and the parent flips ``pending`` → ``ready`` once both of its sides are
-    known. A match fed by two byes therefore ends up ``ready`` (still to be
-    played), never resolved: only round 1 has byes, so propagation is one level
-    deep and never chains.
+    Used at creation to carry a **bye** winner one round forward, and by
+    ``advance`` to promote a decisive winner. The winner takes side A on an even
+    slot and B on an odd one, and the parent flips ``pending`` → ``ready`` once
+    both of its sides are known. A match fed by two byes therefore ends up
+    ``ready`` (still to be played), never resolved.
 
-    The final has no parent (``advance_position`` points past the last round),
-    so a missing parent is simply the tournament's top and is ignored.
+    Returns the parent match, or ``None`` when there is no parent — which is
+    exactly the final: ``advance_position`` points one round past the last, so a
+    missing parent means the winner is the champion. Callers at creation ignore
+    the return; ``advance`` uses it to detect that the tournament is complete.
     """
     next_round, next_slot, side = bracket.advance_position(round_, slot)
     parent = matches.get((next_round, next_slot))
     if parent is None:
-        return
+        return None
     setattr(parent, f"fighter_{side}_id", winner_id)
     setattr(parent, f"fighter_{side}_seed", winner_seed)
     if parent.fighter_a_seed is not None and parent.fighter_b_seed is not None:
         parent.status = MATCH_READY
+    return parent
 
 
 def create_tournament(session, name: str, roster: list[str], difficulty: str,
@@ -176,6 +210,122 @@ def create_tournament(session, name: str, roster: list[str], difficulty: str,
     for slot, seed_a, seed_b in bracket.first_round_pairs(roster):
         if seed_b is None:
             _propagate(matches, 1, slot, roster[seed_a - 1], seed_a)
+
+    session.flush()
+    return tournament
+
+
+def _next_ready_match(tournament: models.Tournament, match_id):
+    """Return the match ``advance`` should play, or ``None`` if there is none.
+
+    Without a ``match_id`` this is the **next** match by E8's total order —
+    lowest round, then lowest slot — among those that are ``ready``. The
+    relationship is already ordered by ``(round, slot)``, so the first ``ready``
+    row is the one. With a ``match_id`` (used only to advance a bracket in a
+    non-default order, for the order-independence property of E7.3) it is that
+    specific match, but still only if it is ``ready``.
+    """
+    ready = [m for m in tournament.matches if m.status == MATCH_READY]
+    if match_id is not None:
+        return next((m for m in ready if m.id == match_id), None)
+    return ready[0] if ready else None
+
+
+def _play_to_a_decision(tournament: models.Tournament,
+                        match: models.TournamentMatch):
+    """Play a ready match, replaying drawn attempts, per E7.4 / B10.
+
+    Runs the pairing through :func:`arena.run_ai_match` at ``match_seed(attempt)``
+    for ``attempt`` = 0, 1, … . A drawn attempt is recorded and the pairing is
+    replayed at the next attempt — never awarded — until an attempt is decisive
+    or :data:`MAX_ATTEMPTS` is reached. Because ``attempt`` feeds the seed, the
+    whole sequence is deterministic, so a replayed tournament reproduces the same
+    draws and the same eventual winner.
+
+    Returns ``(attempts, decisive)`` where ``attempts`` is the E6.1 attempt list
+    (``[{attempt, result, turns, log}]``) and ``decisive`` is the winning
+    attempt's arena result, or ``None`` if all attempts drew.
+    """
+    attempts = []
+    decisive = None
+    for attempt in range(MAX_ATTEMPTS):
+        seed = bracket.match_seed(tournament.seed, match.round, match.slot, attempt)
+        result = arena.run_ai_match(
+            match.fighter_a_id, match.fighter_b_id, tournament.difficulty, seed
+        )
+        attempts.append({
+            "attempt": attempt,
+            "result": result["status"],
+            "turns": result["turns"],
+            "log": result["log"],
+        })
+        if result["winner"] is not None:
+            decisive = result
+            break
+    return attempts, decisive
+
+
+def advance(session, tournament_id: str, *, match_id: str | None = None):
+    """Play the next ready match and propagate the result (E7.2, E7.4, task 8.2).
+
+    Picks the next ``ready`` match by lowest round then lowest slot (E8), plays
+    it AI-vs-AI at the tournament's difficulty and the derived per-match seed,
+    and records every attempt in ``attempts_json``. A drawn attempt is replayed
+    at ``attempt + 1`` rather than awarded (E7.4); ``winner_*`` and ``turns`` come
+    only from the decisive attempt. The winner is promoted into ``round+1,
+    slot//2`` as A on an even slot and B on an odd one, flipping that parent
+    ``pending`` → ``ready`` once both of its sides are known.
+
+    When the final resolves, the tournament becomes ``complete`` and its winner
+    is ``champion_id``. If a match draws out all :data:`MAX_ATTEMPTS` attempts it
+    is left ``drawn_out`` and the tournament ``stalled`` (B10) — no winner is
+    invented and no further round is fed from it.
+
+    The ``match_id`` keyword plays a *specific* ready match instead of the
+    auto-picked one; it exists so a test can advance a bracket in a non-default
+    order and confirm each position's result is order-independent (E7.3). The
+    HTTP layer never passes it.
+
+    Raises :class:`TournamentComplete` if the final has already resolved and
+    :class:`NoReadyMatch` if no ``ready`` match is available (a ``pending`` wait
+    or a ``stalled`` bracket). On success the mutations are flushed and the
+    :class:`models.Tournament` is returned; the caller owns the commit.
+    """
+    tournament = session.get(models.Tournament, tournament_id)
+    if tournament.status == STATUS_COMPLETE:
+        raise TournamentComplete(tournament_id)
+
+    match = _next_ready_match(tournament, match_id)
+    if match is None:
+        raise NoReadyMatch(tournament_id)
+
+    attempts, decisive = _play_to_a_decision(tournament, match)
+    match.attempts_json = json.dumps(attempts)
+
+    if decisive is None:
+        # Ten straight draws (E7.4): abandon the match, stall the tournament.
+        # Nothing propagates, so the parent slot stays undetermined by design.
+        match.status = MATCH_DRAWN_OUT
+        tournament.status = STATUS_STALLED
+        session.flush()
+        return tournament
+
+    winner_side = decisive["winner"]  # "a" or "b" — the arena's bracket side.
+    match.winner_id = getattr(match, f"fighter_{winner_side}_id")
+    match.winner_seed = getattr(match, f"fighter_{winner_side}_seed")
+    match.turns = decisive["turns"]
+    match.status = MATCH_COMPLETE
+
+    positions = {(m.round, m.slot): m for m in tournament.matches}
+    parent = _propagate(
+        positions, match.round, match.slot, match.winner_id, match.winner_seed
+    )
+    if parent is None:
+        # No parent means this was the final: crown the champion.
+        tournament.status = STATUS_COMPLETE
+        tournament.champion_id = match.winner_id
+    elif tournament.status not in (STATUS_COMPLETE, STATUS_STALLED):
+        tournament.status = STATUS_IN_PROGRESS
 
     session.flush()
     return tournament

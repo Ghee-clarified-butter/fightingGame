@@ -356,7 +356,7 @@ installed is the whole stack.
   that many distinct entrants (a `["kaito","kaito"]` bracket has two rows keyed by seed, not one);
   every rejection leaves zero rows behind.
 
-- [ ] **8.2 — Advance and propagation.**
+- [x] **8.2 — Advance and propagation.**
   Files: `backend/tournament.py` — `advance(session, tournament_id)` picking the next `ready` match by
   lowest round then lowest slot, running it through `arena.run_ai_match` at the derived
   `match_seed`, storing `winner_*`, `turns` and `attempts_json`, replaying drawn attempts per E7.4, promoting the winner into

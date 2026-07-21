@@ -1,17 +1,21 @@
-"""Tournament service — creation (extension E7, plan 8.1).
+"""Tournament service — creation and advancement (extension E7, plan 8.1 / 8.2).
 
-Exercises ``tournament.create_tournament`` against a temp-file database: the
-whole bracket is built at creation with byes pre-resolved and never played, and
-every bad input is rejected without leaving a row behind. Advancement,
-serialization and standings arrive in tasks 8.2 / 8.3.
+Exercises ``tournament.create_tournament`` and ``tournament.advance`` against a
+temp-file database: the whole bracket is built at creation with byes pre-resolved
+and never played, every bad input is rejected without leaving a row behind, and
+advancing plays the next ready match AI-vs-AI, replays drawn attempts rather than
+awarding them (E7.4), propagates winners and reaches a champion. Serialization
+and standings arrive in task 8.3.
 """
+
+import json
 
 import pytest
 
 import db
 import models
 import tournament
-from game import bracket
+from game import arena, bracket
 from game.ai import UnknownDifficultyError
 from game.bracket import InvalidRosterError
 from game.fighters import FIGHTERS, UnknownFighterError
@@ -245,3 +249,250 @@ def test_creation_seeds_the_fighter_registry(tmp_path):
 
     ids = {f.id for f in session.query(models.Fighter).all()}
     assert set(FIGHTERS) <= ids
+
+
+# --- advancement: helpers ----------------------------------------------------
+
+
+def _play_out(session, tournament_id):
+    """Advance a tournament until it is complete (or stalled)."""
+    tour = session.get(models.Tournament, tournament_id)
+    while tour.status not in (tournament.STATUS_COMPLETE, tournament.STATUS_STALLED):
+        tournament.advance(session, tournament_id)
+    return tour
+
+
+def _position_summary(session, tournament_id):
+    """The per-position result state used to compare two runs of a bracket."""
+    return {
+        (m.round, m.slot): (m.status, m.winner_id, m.winner_seed, m.turns,
+                            m.attempts_json)
+        for m in _matches(session, tournament_id)
+    }
+
+
+def _draw_result(turns=100):
+    """An arena result for an undecided match (§4.6 draw, no winner)."""
+    return {"winner": None, "winner_side": None, "turns": turns,
+            "status": "draw", "log": []}
+
+
+def _win_result(seed):
+    """A decisive arena result that is a pure function of ``seed``.
+
+    Deterministic in the seed so two tournaments at the same root reproduce the
+    same winners, turns and logs even under a mocked runner.
+    """
+    winner = "a" if seed % 2 == 0 else "b"
+    side = "player" if winner == "a" else "opponent"
+    status = "player_won" if winner == "a" else "opponent_won"
+    return {"winner": winner, "winner_side": side, "turns": seed % 40 + 1,
+            "status": status, "log": [{"turn": 1, "actor": side}]}
+
+
+# --- advancement: reaching a champion ---------------------------------------
+
+
+@pytest.mark.parametrize("n", range(bracket.MIN_ROSTER, bracket.MAX_ROSTER + 1))
+def test_advancing_reaches_a_champion(tmp_path, n):
+    """For n in 2..16, advancing repeatedly reaches complete with a champion (E10)."""
+    session = _session(tmp_path)
+    tour = tournament.create_tournament(session, "Cup", _roster(n), "heuristic", 7)
+
+    _play_out(session, tour.id)
+
+    assert tour.status == "complete"
+    assert tour.champion_id is not None
+    # The champion is the winner of the last-round match.
+    last_round = bracket.round_count(bracket.bracket_size(n))
+    final = next(m for m in _matches(session, tour.id) if m.round == last_round)
+    assert final.slot == 0
+    assert final.status == "complete"
+    assert tour.champion_id == final.winner_id
+    assert final.winner_seed is not None
+
+
+def test_winner_propagates_to_the_right_parent_slot_and_side(tmp_path):
+    """Winner of (r, s) lands at (r+1, s//2) as A for even s, B for odd (E7.2)."""
+    session = _session(tmp_path)
+    tour = tournament.create_tournament(session, "Cup", _roster(8), "heuristic", 3)
+
+    _play_out(session, tour.id)
+
+    positions = {(m.round, m.slot): m for m in _matches(session, tour.id)}
+    last_round = bracket.round_count(bracket.bracket_size(8))
+    for (round_, slot), match in positions.items():
+        if round_ == last_round:
+            continue  # the final has no parent
+        parent_round, parent_slot, side = bracket.advance_position(round_, slot)
+        parent = positions[(parent_round, parent_slot)]
+        seated = parent.fighter_a_seed if side == "a" else parent.fighter_b_seed
+        assert seated == match.winner_seed
+        assert side == ("a" if slot % 2 == 0 else "b")
+
+
+def test_advancing_a_complete_tournament_raises(tmp_path):
+    """advance on a resolved tournament raises TournamentComplete (E8, 409)."""
+    session = _session(tmp_path)
+    tour = tournament.create_tournament(session, "Duel", _roster(2), "heuristic", 5)
+
+    _play_out(session, tour.id)
+    assert tour.status == "complete"
+
+    with pytest.raises(tournament.TournamentComplete):
+        tournament.advance(session, tour.id)
+
+
+# --- advancement: determinism and order independence ------------------------
+
+
+def test_two_tournaments_at_the_same_seed_are_identical(tmp_path):
+    """Same roster/difficulty/seed ⇒ identical champion, logs and turns (E10)."""
+    roster = _roster(4)
+
+    s1 = _session(tmp_path, "a.db")
+    t1 = tournament.create_tournament(s1, "Cup", roster, "heuristic", 123)
+    _play_out(s1, t1.id)
+
+    s2 = _session(tmp_path, "b.db")
+    t2 = tournament.create_tournament(s2, "Cup", roster, "heuristic", 123)
+    _play_out(s2, t2.id)
+
+    assert t1.champion_id == t2.champion_id
+    assert _position_summary(s1, t1.id) == _position_summary(s2, t2.id)
+
+
+def test_advance_order_does_not_change_results(tmp_path):
+    """Advancing a bracket in a different order gives identical results (E7.3)."""
+    roster = _roster(4)
+
+    # Default order: lowest round, lowest slot first.
+    s1 = _session(tmp_path, "a.db")
+    t1 = tournament.create_tournament(s1, "Cup", roster, "heuristic", 55)
+    _play_out(s1, t1.id)
+
+    # Reversed: play round-1 slot 1 before slot 0, then finish the final.
+    s2 = _session(tmp_path, "b.db")
+    t2 = tournament.create_tournament(s2, "Cup", roster, "heuristic", 55)
+    r1 = {m.slot: m for m in _matches(s2, t2.id) if m.round == 1}
+    tournament.advance(s2, t2.id, match_id=r1[1].id)
+    _play_out(s2, t2.id)
+
+    assert t1.champion_id == t2.champion_id
+    assert _position_summary(s1, t1.id) == _position_summary(s2, t2.id)
+
+
+# --- advancement: a drawn attempt is replayed, never awarded (E7.4) ----------
+
+
+def test_a_drawn_attempt_is_replayed_not_awarded(tmp_path, monkeypatch):
+    """A draw records result 'draw' with no winner and replays at attempt+1."""
+    session = _session(tmp_path)
+    tour = tournament.create_tournament(session, "Duel", _roster(2), "heuristic", 5)
+
+    calls = {"n": 0}
+
+    def fake(a_id, b_id, difficulty, seed):
+        calls["n"] += 1
+        # First attempt draws; the replay at attempt 1 is decisive.
+        return _draw_result() if calls["n"] == 1 else {
+            "winner": "b", "winner_side": "opponent", "turns": 12,
+            "status": "opponent_won", "log": [{"turn": 1}]}
+
+    monkeypatch.setattr(arena, "run_ai_match", fake)
+
+    tournament.advance(session, tour.id)
+    match = _matches(session, tour.id)[0]
+
+    attempts = json.loads(match.attempts_json)
+    assert [a["attempt"] for a in attempts] == [0, 1]
+    assert attempts[0]["result"] == "draw"
+    assert "winner" not in attempts[0]
+    assert attempts[1]["result"] == "opponent_won"
+    # winner_seed comes only from the decisive attempt.
+    assert match.winner_seed == match.fighter_b_seed
+    assert match.winner_id == match.fighter_b_id
+    assert match.turns == 12
+    assert match.status == "complete"
+    assert tour.status == "complete"  # a 2-fighter bracket is a single final
+
+
+def test_ten_consecutive_draws_stall_the_tournament(tmp_path, monkeypatch):
+    """Ten draws leave the match drawn_out and the tournament stalled (B10)."""
+    session = _session(tmp_path)
+    tour = tournament.create_tournament(session, "Duel", _roster(2), "heuristic", 5)
+
+    monkeypatch.setattr(arena, "run_ai_match",
+                        lambda a, b, d, s: _draw_result())
+
+    tournament.advance(session, tour.id)
+    match = _matches(session, tour.id)[0]
+
+    attempts = json.loads(match.attempts_json)
+    assert len(attempts) == tournament.MAX_ATTEMPTS == 10
+    assert all(a["result"] == "draw" for a in attempts)
+    assert match.status == "drawn_out"
+    assert match.winner_id is None and match.winner_seed is None
+    assert tour.status == "stalled"
+    assert tour.champion_id is None
+    # A stalled bracket has no ready match left to advance.
+    with pytest.raises(tournament.NoReadyMatch):
+        tournament.advance(session, tour.id)
+
+
+def test_a_replayed_draw_reproduces_at_the_same_root_seed(tmp_path, monkeypatch):
+    """A bracket containing a replayed draw still reproduces exactly (E7.4)."""
+    roster = _roster(4)
+    root = 21
+    # Force the first round-1 match's first attempt to draw, keyed on its
+    # position-derived seed — a pure function of the root, so it reproduces.
+    draw_seed = bracket.match_seed(root, 1, 0, 0)
+
+    def fake(a_id, b_id, difficulty, seed):
+        return _draw_result() if seed == draw_seed else _win_result(seed)
+
+    monkeypatch.setattr(arena, "run_ai_match", fake)
+
+    s1 = _session(tmp_path, "a.db")
+    t1 = tournament.create_tournament(s1, "Cup", roster, "heuristic", root)
+    _play_out(s1, t1.id)
+
+    s2 = _session(tmp_path, "b.db")
+    t2 = tournament.create_tournament(s2, "Cup", roster, "heuristic", root)
+    _play_out(s2, t2.id)
+
+    replayed = next(m for m in _matches(s1, t1.id) if m.round == 1 and m.slot == 0)
+    assert len(json.loads(replayed.attempts_json)) == 2  # one draw, one decisive
+    assert t1.status == "complete"
+    assert t1.champion_id == t2.champion_id
+    assert _position_summary(s1, t1.id) == _position_summary(s2, t2.id)
+
+
+# --- advancement: persistence across a restart ------------------------------
+
+
+def test_results_survive_a_restart(tmp_path):
+    """Create, advance, dispose, reopen the same file: bracket compares equal (E10)."""
+    url = f"sqlite+pysqlite:///{tmp_path / 'persist.db'}"
+
+    engine = db.make_engine(url)
+    db.init_db(engine)
+    session = db.make_session_factory(engine)()
+    tour = tournament.create_tournament(session, "Cup", _roster(4), "heuristic", 7)
+    tournament_id = tour.id
+    tournament.advance(session, tournament_id)
+    session.commit()
+    before_status = tour.status
+    before = _position_summary(session, tournament_id)
+    session.close()
+    engine.dispose()
+
+    # Rebuild against the same file, outside any prior session.
+    engine2 = db.make_engine(url)
+    session2 = db.make_session_factory(engine2)()
+    reopened = session2.get(models.Tournament, tournament_id)
+    assert reopened is not None
+    assert reopened.status == before_status
+    assert _position_summary(session2, tournament_id) == before
+    session2.close()
+    engine2.dispose()
