@@ -1,385 +1,431 @@
-# Implementation Plan — Step 1, Base Arena
+# Implementation Plan — Step 2, AI Opponent + Persistent Tournament
 
-Derived from `specs/base.md` (active spec). Rewritten by the plan loop; consumed one task per
-iteration by `PROMPT_build.md`.
+Derived from `specs/extension.md` (active spec), which builds on `specs/base.md` (still
+authoritative for the fighter model, the six moves, the damage formula and the base REST contract).
+Rewritten by the plan loop; consumed one task per iteration by `PROMPT_build.md`.
 
 **Rules for the builder:**
 - Do exactly one unchecked task per iteration, top to bottom. Do not skip ahead.
 - `./script/test` must pass at the end of **every** task. A task that leaves the suite red is not
-  done. This is why the scaffolding tasks (0.x) ship with real assertions rather than empty suites —
-  `vitest` exits non-zero when it finds no test files.
+  done — which is why the two contract-breaking tasks (1.1, 1.2) update the spec, the code and the
+  assertion together rather than in separate steps.
+- `./script/lint` must be clean at the end of every task (`max-line-length = 100`).
 - No stubs, no placeholders, no TODOs (AGENTS.md).
+- Section references: `§n` → `specs/base.md`, `En` → `specs/extension.md`.
+
+---
+
+## Current state (verified against the tree, not assumed)
+
+Step 1 is complete and green: `backend/game/{fighters,moves,rules}.py`, `backend/app.py` (in-memory
+match store, three endpoints), `backend/tests/{test_rules,test_api,test_fuzz,test_moves,
+test_fighters,test_imports}.py`, and a React 18 + TS + Vite + Tailwind frontend with Vitest specs.
+Nothing of Part A or Part B exists yet: no `difficulty`, no `passive_streak`, no AI module, no
+SQLAlchemy dependency, no tournament code, no bracket UI.
+
+Relevant existing shapes the plan has to move:
+- `rules.play_turn(state, player_action, rng)` calls `rules.choose_opponent_action` internally
+  (`backend/game/rules.py:130`), and is referenced 26 times across `test_rules.py` (15) and `test_fuzz.py` (11).
+- `rules._apply_attack` draws its own spread via `rng.uniform` (`backend/game/rules.py:197`).
+- The §5.5 exact-shape assertion is `STATE_KEYS` / `FIGHTER_KEYS` at `backend/tests/test_api.py:13`,
+  asserted by `test_the_payload_has_exactly_the_spec_keys` (`backend/tests/test_api.py:226`).
+- `.gitignore` already ignores `*.db` (line 21), so E6 needs no gitignore change.
 
 ---
 
 ## A. Decisions this plan pins down
 
-The spec leaves these under-determined. They are settled here so the build loop does not bake in an
-arbitrary choice and then test it against itself.
+The spec leaves these under-determined, or states two things that cannot both be literally true.
+They are settled here so the build loop does not bake in an arbitrary choice and then test it
+against itself. (Step 1's decisions A1–A8 stand unchanged; these continue as B1–B12.)
 
-**A1 — RNG draw order vs. the `resolve_turn` signature (§4.8 vs §6).**
-§4.8 fixes consumption order as (1) spd tie flip, (2) opponent's move choice, (3) first attack
-spread, (4) second attack spread. But §6 pins `resolve_turn(state, player_action, opponent_action,
-rng)` — by then the opponent's action already exists, so the obvious implementation consumes draw #2
-before draw #1. Resolution: `rules.py` exposes three pure functions.
+**B1 — All policy moves into `backend/game/ai.py`; `rules.py` keeps no policy.**
+E2.1 binds the streak cap to *every* AI policy including `random`, so there must be exactly one
+code path that picks an AI move. `choose_opponent_action` and `play_turn` are **moved** out of
+`rules.py` into `ai.py` as:
 
 ```
-roll_turn_order(state, rng) -> ("player"|"opponent", "player"|"opponent")   # consumes draw #1
-choose_opponent_action(state, rng) -> str                                   # consumes draw #2
-resolve_turn(state, player_action, opponent_action, rng, *, order=None) -> (new_state, entries)
+ai.choose_action(state, side, difficulty, rng) -> str          # dispatches on difficulty
+ai.play_turn(state, player_action, rng) -> (new_state, entries)  # reads state["difficulty"]
 ```
 
-`resolve_turn` keeps the §6 signature and remains the single resolution entry point; the added
-keyword-only `order` lets the caller pass an order already rolled. When `order is None` it rolls one
-itself (convenient for unit tests that exercise one turn in isolation). The app layer calls
-`roll_turn_order` → `choose_opponent_action` → `resolve_turn(..., order=order)`, which reproduces
-§4.8's order exactly.
+`rules.py` keeps `legal_actions`, `compute_damage`, `effective_spd`, `roll_turn_order`,
+`resolve_turn`, `check_status`, `new_match` — no imports of `ai`, so there is no cycle. Leaving a
+second, uncapped random chooser behind in `rules.py` was rejected: the fuzz suite would then be
+exercising a path the server does not use.
 
-**A2 — Turn order uses start-of-turn speed.**
-§4.4 says "Ascend's +5 counts", but whether speeds tie cannot be known before the opponent's action
-is drawn (draw #2), while the tie flip is draw #1. The only ordering consistent with §4.8 is:
-`roll_turn_order` uses effective spd **entering** the turn (`spd + 5` if `ascended` was already true
-before this turn). A fighter that ascends on turn *n* gets its speed advantage from turn *n+1*. The
-acceptance criterion "`spd` +5 after Ascend" is still met — the buff is in the state immediately.
+**B2 — The RNG draw order is preserved exactly.**
+`ai.play_turn` calls `roll_turn_order` (draw #1) → `choose_action` (draw #2, *only* when
+`difficulty == "random"`) → `resolve_turn` (draws #3/#4). The random policy makes exactly one
+`rng.choice` call in the same position as today, whether or not the cap filtered its candidate list.
+So E3.4's revised order holds and §4.8 is unviolated.
 
-**A3 — Tie flip only when start-of-turn effective speeds are equal**, per §4.8's "no dummy draws".
-Method is pinned to `rng.random() < 0.5` → player first, else opponent first. Determinism tests
-assert exact numbers, so the *method*, not just the order, has to be fixed.
+**B3 — The cap changes what `random` picks in a small number of seeded matches, and that is
+correct.** E1 says `random` is "the Step 1 behaviour"; E2.1 says the cap binds it. E2.1 wins (E10
+asserts "under any policy"). The candidate *list* shrinks on a third consecutive passive turn, so a
+fixed seed can now yield a different match than it did in Step 1. Same-seed-vs-same-seed determinism
+tests are self-comparisons and stay green; any Step 1 test that hardcodes a damage number at a seed
+may need its expected value re-derived. That is a permitted consequence of E2.1 — re-derive the
+number, never weaken the assertion. If a Step 1 test breaks for any *other* reason it is a genuine
+regression and is fixed in the code (E4.1).
 
-**A4 — RNG methods are pinned.** `random.Random(seed)`; spread is `rng.uniform(0.90, 1.10)`;
-opponent choice is `rng.choice(sorted_legal_actions)` over `legal_actions(state.opponent)` sorted in
-the canonical move order `["strike","ki_blast","surge_beam","charge","guard","ascend"]` (filtered).
-Sorting matters: iterating a set would make the seed non-reproducible across runs.
+**B4 — `passive_streak` is bookkeeping in `resolve_turn`, tracked for both sides.**
+`resolve_turn` increments the streak of whichever side chose `charge`/`guard`/`ascend` and resets it
+to 0 for whichever chose an attack — including an attack that was skipped because its owner was
+already KO'd (the fighter is dead; the value is inert). Tracking it for the human player too is what
+E4 means by "each fighter gains `passive_streak`"; it never constrains the player, because only
+`ai.choose_action` reads it and `rules.legal_actions` is untouched (E2.1).
 
-**A5 — Rounding.** `damage = max(1, round(...))` uses Python's built-in `round` (banker's rounding,
-half-to-even) exactly as §4.1 writes it. Tests must be generated against this, not against
-half-away-from-zero.
+**B5 — `difficulty` lives in the rules state dict**, so `serialize` reads it with no extra plumbing:
+`rules.new_match(player_id, opponent_id, difficulty="random")` puts `"difficulty"` at the top level
+of the state. Validation of the value stays in the HTTP layer (§6: no rules in the routes, no
+routing in the rules) via a shared `DIFFICULTIES` tuple in `ai.py`.
 
-**A6 — Error precedence** (the spec lists codes but not their order). Check in this order and return
-the first that fires: `match_not_found` (404) → `match_over` (409) → `unknown_action` (400) →
-`already_ascended` (400) → `insufficient_ki` (400). So `ascend` at 20 ki with `ascend_used` true
-returns `already_ascended`, and a garbage action on a finished match returns `match_over`.
+**B6 — `resolve_turn` gains a keyword-only `spread`.**
+`resolve_turn(state, player_action, opponent_action, rng, *, order=None, spread=None)`. When
+`spread` is not `None` that fixed value is used for every attack this turn and **no** RNG draw
+happens (E3.4: "the search must never be handed the live match RNG"). The search also needs an order
+without a coin flip, so `rules.deterministic_order(state)` is added: identical to `roll_turn_order`
+but breaks a tie as `("player", "opponent")` with no draw. The search passes `rng=None` together
+with an explicit `spread` and `order`; `resolve_turn` must therefore never touch `rng` on that path.
 
-**A7 — Log entry order and `target_hp`.** Entries are appended in **turn order** (first actor, then
-second) even though non-attack effects resolve earlier (§4.4 step 3) — this matches the §5.5 example,
-where the faster player's attack is listed before the slower opponent's guard. `target_hp` is always
-the hp of the *actor's opponent* after that entry resolves; for Charge/Guard/Ascend it is that value
-unchanged, with `damage: 0`.
+**B7 — Search-node budget arithmetic, and what the leaf test asserts.**
+E3.5's table (108 / 3,888) ignores E3.2's rule that a turn where neither side attacks yields one
+child instead of three. E3.2 is normative; the table is an upper bound. With all six moves legal for
+both sides, 3×3 = 9 of the 36 root action pairs are attack-free, so:
 
-**A8 — A fighter KO'd before it attacks still logs its non-attack effect.** Its Charge/Guard/Ascend
-already resolved in step 3; only the attack is skipped (§4.4). So a KO'd charger produces one entry,
-a KO'd attacker produces none.
+```
+root ply children = 27*3 + 9*1 = 90        (<= 108)
+depth-2 leaves    = 90 * 36    = 3240      (<= 3888)
+resolve_turn calls = 90 + 3240 = 3330
+```
 
-**A9 — Cross-origin is solved with a Vite proxy** (§6's first option), so no `flask-cors` dependency
-and no CORS headers in `app.py`. The frontend calls relative `/api/...` paths only.
+The leaf-count test asserts exactly 90 and 3240 on a full-hp/full-ki position (no line can terminate
+from full hp at depth 2, so no short-circuit perturbs the count) **and** asserts the E3.5 ceilings
+of 108/3888, which is the "three-way at root, one-way deeper" criterion in E10.
 
-**A10 — Import layout.** `./script/server` runs `cd backend && flask run`, so `app.py` imports
-`game.rules`. `./script/test` runs `pytest backend/tests` from the repo root, where `backend/` is not
-on `sys.path`. `backend/tests/conftest.py` therefore inserts the `backend/` directory into
-`sys.path`, and tests import `from game.rules import ...` — the same module path the server uses.
+**B8 — The budget is 150 ms and the sample size is 200.**
+E3.5/E10 say 150 ms; E11 says 100 ms. E3.5 is the derivation and E10 is the acceptance criterion, so
+150 ms wins. E10 says 200 seeds for all three strength criteria; E11 says 100 for two of them. E10
+wins. Where E11 and E10 disagree, E10 is the contract.
+
+**B9 — Escalation if the strength suites are too slow.** 200 seeded matches × ~15 AI moves × a
+sub-150 ms search is minutes, not seconds. Task 4.2 measures it. If the search-side strength tests
+exceed a **180 s** combined budget, apply these in order and record which was used:
+1. Per-move-selection memoization (explicitly permitted by E3.5; cache is discarded after each
+   selection so it can never leak across turns).
+2. Alpha–beta pruning over the deterministic (mean-only) deeper plies — it changes the work done,
+   never the value returned, so every value-based test stays valid.
+3. Drop the search depth to 1, which E3.5 names as the sanctioned fallback ("the budget wins, not
+   the depth").
+Never reduce the seed count: E10 fixes it at 200, and a 55% threshold measured over fewer matches is
+a different claim.
+
+**B10 — A tournament match that ends in `draw` is replayed, never awarded** (E7.4).
+§4.6 permits `draw` at the turn cap; a bracket slot needs a winner, but awarding one to a fighter
+that did not win is a lie in the record. So the drawn attempt is persisted with `result: "draw"`
+and no winner, and the same pairing replays at `match_seed(attempt + 1)` until decisive.
+`winner_seed` is set only from the decisive attempt.
+
+- `TournamentMatch.attempts_json` holds `[{attempt, result, turns, log}]`, normally one entry.
+- **Hard cap of 10 attempts**: then `status = "drawn_out"` and the tournament is `"stalled"`.
+  An unbounded retry loop inside a request handler is not acceptable however unlikely the path is.
+- Still fully deterministic, since `attempt` feeds the seed — a replayed tournament reproduces the
+  same draws and the same eventual winner.
+- The tests must **force** a draw with a crafted state rather than hoping to observe one; at
+  ≥95% KO rate a natural draw will essentially never appear in a test run.
+
+**B11 — Standings sort is total.** E8.1 says "wins descending then name"; with duplicate fighter ids
+that is not a total order, so the tie-break continues to **seed number ascending**. Display name is
+`"Kaito (2)"` — the fighter's name plus its seed number, per E7.2 — and is built server-side so the
+client does no sentence-building, consistent with §5.5's `text`.
+
+**B12 — Layering for Part B.** Pure bracket arithmetic (`backend/game/bracket.py`) and the AI-vs-AI
+match runner (`backend/game/arena.py`) know nothing about SQLAlchemy and are unit-tested without a
+database. `backend/models.py` is declarative only. `backend/tournament.py` is the service layer that
+joins them (create / advance / serialize). `backend/app.py` stays validation → service → serialize.
+Single matches stay in the in-memory store, untouched (E6).
+
+**B13 — Library check (E5 requirement of this plan).** The venv is CPython 3.13.5. The only new
+runtime dependency is **SQLAlchemy 2.0.x** (`SQLAlchemy>=2.0.36,<2.1`) — 2.0.36 is the first release
+with cp313 wheels, and the 2.0 ORM (`DeclarativeBase`, `Mapped`, `mapped_column`) is the API this
+plan uses. `sqlite3` is stdlib, so there is no driver to add. **Flask-SQLAlchemy is deliberately not
+used**: it binds sessions to an app context, and E10 requires a persistence test that disposes the
+session and rebuilds it against the same file outside any request. No new frontend dependency: E9
+permits a state toggle instead of a router, so React 18 + Vite + Tailwind + Vitest as already
+installed is the whole stack.
 
 ---
 
-## B. Library versions
+## B. Task list
 
-Verified against the toolchain this repo actually runs on (`running.md`): **Python 3.13.5**,
-**Node 22.19.0**. Ranges, not exact pins, so `./script/setup` resolves current patches; the builder
-must confirm the install actually succeeds rather than assuming.
+### 1. State and rules groundwork (contract changes first, so the suite is green after each)
 
-Backend — `backend/requirements.txt`:
-- `Flask>=3.1,<4` — supports Python 3.9+, incl. 3.13. Ships `app.test_client()`, so no extra HTTP
-  test dependency is needed.
-- `pytest>=8,<9` — supports 3.13.
-- `flake8>=7,<8` — supports 3.13; invoked as `python -m flake8` by `./script/lint`.
+- [ ] **1.1 — Add `passive_streak` to the fighter and maintain it in `resolve_turn`.**
+  Files: `backend/game/fighters.py` (`new_fighter` → `"passive_streak": 0`), `backend/game/rules.py`
+  (`resolve_turn` per B4), `specs/base.md` §5.5 (add the key to the fighter example — E4.1 requires
+  the two specs to agree), `backend/tests/test_api.py` (`FIGHTER_KEYS`),
+  `frontend/src/types.ts` (`Fighter.passive_streak: number`).
+  Tests: `backend/tests/test_fighters.py` — a fresh fighter has `passive_streak == 0`.
+  `backend/tests/test_rules.py` — the streak increments on `charge`, `guard` and `ascend`; resets to
+  0 on each of the three attacks; is tracked independently per side; survives a turn in which the
+  other side attacked. `test_api.py::test_the_payload_has_exactly_the_spec_keys` still passes with
+  the widened `FIGHTER_KEYS`.
 
-Frontend — `frontend/package.json`:
-- `vite@^7` — requires Node `^20.19 || >=22.12`; 22.19.0 qualifies.
-- `react@^18.3` + `react-dom@^18.3` — spec §6 says React 18, so do **not** install React 19.
-- `typescript@^5`, `@vitejs/plugin-react@^5`.
-- `vitest@^3` + `jsdom@^26` (`environment: "jsdom"`).
-- `@testing-library/react@^16` + `@testing-library/dom@^10` + `@testing-library/jest-dom@^6`.
-  RTL 16 declares `@testing-library/dom` as a *peer* dependency — it must be listed explicitly or
-  the import fails at test time.
-- `tailwindcss@^4` + `@tailwindcss/vite@^4`. Tailwind v4 is CSS-first: register the Vite plugin and
-  put `@import "tailwindcss";` at the top of `src/index.css`. Do **not** create
-  `tailwind.config.js`, `postcss.config.js`, or install `autoprefixer`/`postcss` — those are the v3
-  setup, and mixing the two is the standard way this scaffold breaks.
-- `eslint@^9` + `typescript-eslint@^8` + `eslint-plugin-react-hooks` + `eslint-plugin-react-refresh`,
-  flat config in `eslint.config.js` (ESLint 9 no longer reads `.eslintrc`).
+- [ ] **1.2 — Add `difficulty` to the match state and the §5.5 payload.**
+  Files: `backend/game/rules.py` (`new_match(player_id, opponent_id, difficulty="random")` per B5),
+  `backend/app.py` (`serialize` emits `"difficulty"`), `specs/base.md` §5.5 (add the top-level key),
+  `backend/tests/test_api.py` (`STATE_KEYS`), `frontend/src/types.ts` (`MatchState.difficulty`).
+  Tests: `test_rules.py` — a new match defaults to `"random"` and carries a passed-in value.
+  `test_api.py` — the exact-key assertion passes with the new key set, and a match created without a
+  `difficulty` field reports `"random"`. This and 1.1 are the **only** Step 1 tests permitted to
+  change (E4.1); note in the commit that the failure was the contract revision, not a regression.
 
-Not used: `flask-cors` (see A9), `requests`, any state/fetch library.
+- [ ] **1.3 — Let `resolve_turn` take a fixed spread, and add `deterministic_order`.**
+  Files: `backend/game/rules.py` (B6: keyword-only `spread`; `_apply_attack` takes the spread rather
+  than drawing when one is supplied; new `deterministic_order(state)`).
+  Tests: `test_rules.py` — with `spread=1.0` the damage equals the formula computed by hand for both
+  attackers; passing a spread leaves `rng.getstate()` byte-identical (and works with `rng=None`);
+  the default path still draws exactly one spread per resolved attack and none for a non-attack
+  turn; `deterministic_order` returns `("player","opponent")` on a tie and consumes no RNG; the
+  existing draw-order tests are unchanged.
 
----
+### 2. AI policies (pure logic, no HTTP)
 
-## C. Tasks
+- [ ] **2.1 — Create `backend/game/ai.py`: move `play_turn`/`choose_opponent_action`, add the
+  difficulty dispatch and the streak cap.**
+  Files: new `backend/game/ai.py` (`DIFFICULTIES = ("random", "heuristic", "search")`,
+  `UnknownDifficultyError`, `attacking_candidates(fighter, actions)` implementing E2.1, the `random`
+  policy, `choose_action`, `play_turn`), `backend/game/rules.py` (remove the two moved functions),
+  `backend/app.py` (call `ai.play_turn`), `backend/tests/test_rules.py` and
+  `backend/tests/test_fuzz.py` (repoint all 26 references to `game.ai`).
+  Tests: new `backend/tests/test_ai.py` — the cap forces an attack on the third consecutive passive
+  turn under `random`; two consecutive passive turns are still allowed; a reset mid-streak restarts
+  the count; `choose_action` raises `UnknownDifficultyError` for an unknown value; the random policy
+  consumes exactly one `rng.choice` draw whether or not the cap filtered the list.
+  Also confirm per B3 which (if any) Step 1 seeded expectations moved, and re-derive them.
 
-### Phase 0 — Toolchain (must land first; every later task depends on a green suite)
+- [ ] **2.2 — Implement the heuristic policy (E2 rules 1–7).**
+  Files: `backend/game/ai.py`.
+  Tests: `backend/tests/test_ai.py` — one test per rule on a crafted state where exactly that rule
+  fires, each paired with a state where its guard is *just* unmet so the next rule fires instead:
+  finish uses minimum damage at spread 0.90 and picks the **cheapest** lethal attack; a foe surviving
+  minimum damage by 1 hp falls through; panic guard triggers on the foe's maximum-damage
+  (spread 1.10, unguarded) Surge Beam and not when the foe cannot afford 40 ki; Ascend needs
+  `hp/hp_max >= 0.50` **and** `ki >= 65` (both boundaries tested); beam needs `ki >= 80`; poke;
+  recover at `ki < 15`; Strike as the fallback. Every rule skips itself when the move is illegal.
 
-- [x] **0.1 Backend scaffold and a green pytest run.**
-      Files: `backend/requirements.txt`, `backend/game/__init__.py`, `backend/tests/conftest.py`,
-      `.flake8` (repo root), `backend/tests/test_imports.py`.
-      `conftest.py` inserts the `backend/` dir into `sys.path` (A10). `.flake8` sets
-      `max-line-length = 100` and excludes `.venv,node_modules,__pycache__`.
-      Run `./script/setup` to create `.venv` and install.
-      Test: `test_imports.py` asserts `import game` succeeds and that `sys.path` resolution works.
-      Done when `./script/test` passes (frontend half still skips) and `./script/lint` is clean.
+- [ ] **2.3 — Cap precedence and legality fuzz.**
+  Files: `backend/game/ai.py` if the tests find a gap; otherwise tests only.
+  Tests: `test_ai.py` — on a third consecutive passive turn the heuristic **attacks even though rule
+  2 would have it guard**, and may consequently die (E2.1's stated precedence, an E10 criterion);
+  1000 generated states × every difficulty yield only moves in `rules.legal_actions`; a heuristic
+  selection leaves `rng.getstate()` unchanged; `rules.legal_actions` output is byte-identical for a
+  fighter with `passive_streak` 0 and 5, and a player may `charge` four turns running through
+  `ai.play_turn` (the player-not-bound criterion).
 
-- [x] **0.2 Frontend scaffold and a green vitest run.**
-      Files: `frontend/package.json`, `frontend/tsconfig.json`, `frontend/tsconfig.node.json`,
-      `frontend/vite.config.ts`, `frontend/index.html`, `frontend/src/main.tsx`,
-      `frontend/src/App.tsx`, `frontend/src/index.css`, `frontend/src/setupTests.ts`,
-      `frontend/eslint.config.js`, `frontend/src/App.test.tsx`.
-      Scripts: `dev`, `build`, `lint`, and `test` → `vitest` (so `./script/test`'s
-      `npm run test -- --run` works). `vite.config.ts` sets `test.environment: "jsdom"`,
-      `test.setupFiles: "./src/setupTests.ts"`, `test.globals: true`, registers
-      `@tailwindcss/vite`, and configures `server.proxy` `/api` → `http://localhost:5000`
-      (§6 / A9). `App.tsx` renders a title placeholder only.
-      Test: `App.test.tsx` renders `<App />` and asserts the title is in the document.
-      Done when `./script/test` passes both halves and `./script/lint` is clean.
+### 3. Expectimax search
 
-### Phase 1 — Pure game rules (`backend/game/`), no Flask, no HTTP
+- [ ] **3.1 — Evaluation function.**
+  Files: new `backend/game/search.py` (`evaluate(state, side) -> float`, E3.3 verbatim).
+  Tests: new `backend/tests/test_search.py` — terminal short-circuits to ±1000 and dominate any
+  material term; sign and magnitude on hand-built winning / losing / exactly-equal positions;
+  `hp_term` uses fractions so Kaito at 50/100 and Vega at 65/130 evaluate equal on hp; the ki and
+  tempo weights match the spec's constants.
 
-- [x] **1.1 Fighter templates.**
-      Files: `backend/game/fighters.py`, `backend/tests/test_fighters.py`.
-      `FIGHTERS: dict[str, dict]` with `kaito` and `vega` at the exact §2.1 numbers, and
-      `new_fighter(fighter_id) -> dict` returning a fresh independent copy with `hp = hp_max`,
-      `ki = 30`, `guarding/ascended/ascend_used = False`. Unknown id raises `UnknownFighterError`.
-      Tests: both templates match §2.1 field for field; two `new_fighter("kaito")` copies are
-      `==` but not `is`, and mutating one does not touch the other (mirror-match independence, §2.1);
-      unknown id raises.
+- [ ] **3.2 — Chance node.**
+  Files: `backend/game/search.py` (`SPREAD_SAMPLES = (0.9333, 1.0, 1.0667)`, a chance expansion that
+  yields three equally weighted children when either side attacks and exactly one when neither does,
+  and takes the mean-only sample below the root ply).
+  Tests: `test_search.py` — three children for an attacking pair, one for `charge`/`guard`; the
+  weights are 1/3 each and sum to 1; the samples are the interval midpoints, not `0.90/1.00/1.10`;
+  no RNG is consumed.
 
-- [x] **1.2 Move table and ki costs.**
-      Files: `backend/game/moves.py`, `backend/tests/test_moves.py`.
-      `MOVES` keyed by the six action ids, each with `cost`, `power` (`None` for non-attacks),
-      `name`, and `is_attack`. `ACTION_ORDER` is the canonical list from A4.
-      Tests: exactly six moves; costs are strike/charge/guard 0, ki_blast 15, surge_beam 40,
-      ascend 40; powers 14/26/48; Charge, Guard and Ascend are not attacks.
+- [ ] **3.3 — Depth-limited expectimax with MAX/MIN/CHANCE and canonical tie-breaking.**
+  Files: `backend/game/search.py` (`choose(state, side, depth=2)`), `backend/game/ai.py` (wire the
+  `search` difficulty, applying the E2.1 cap **at the root only**, and using the heuristic for leaf
+  ordering).
+  Tests: `test_search.py` — a one-move-from-lethal position is solved at depth 1; equal-valued
+  actions break to the earliest in `["strike","ki_blast","surge_beam","charge","guard","ascend"]`;
+  `rng.getstate()` is unchanged across a selection and the live match RNG is never passed in; the
+  root cap forces an attack after two passive turns; the instrumented counts are exactly 90 root
+  children and 3240 leaves on a full-hp/full-ki position, and within E3.5's 108/3888 ceilings (B7).
 
-- [x] **1.3 Match state construction.**
-      Files: `backend/game/rules.py`, `backend/tests/test_rules.py`.
-      `new_match(player_id, opponent_id) -> dict` producing the §5.5 shape minus HTTP concerns
-      (no RNG argument — creation consumes no draws, per §4.8's no-dummy-draws rule):
-      `status: "in_progress"`, `turn: 0`, `log: []`, both fighters from `new_fighter`. Plain dicts
-      throughout so serialization is a no-op.
-      Tests: fresh match has `turn == 0`, empty `log`, both fighters at full hp and 30 ki,
-      `status == "in_progress"`; a mirror match (`kaito` vs `kaito`) is constructed without error.
+- [ ] **3.4 — Time budget.**
+  Files: `backend/game/search.py` only if it misses.
+  Tests: `test_search.py` — a selection on the worst-case position (both sides full ki, all six moves
+  legal) completes in **under 150 ms** (B8), timed with `time.perf_counter` over a warm call. If
+  depth 2 cannot meet it, apply B9 and record in the test docstring which mitigation was used and the
+  measured time.
 
-- [x] **1.4 `legal_actions`.**
-      Files: `backend/game/rules.py`, `backend/tests/test_rules.py`.
-      `legal_actions(fighter) -> list[str]` in `ACTION_ORDER` order: strike/charge/guard always;
-      ki_blast iff `ki >= 15`; surge_beam iff `ki >= 40`; ascend iff `ki >= 40 and not ascend_used`.
-      Tests: at 0 ki → `["strike","charge","guard"]` (Guard legal at 0 ki, §8); at 15 → adds
-      ki_blast; at 40 → adds surge_beam and ascend; at 40 with `ascend_used` → no ascend; result is
-      always a sorted-by-`ACTION_ORDER` list, never a set.
+### 4. AI-vs-AI harness and strength
 
-- [x] **1.5 Damage formula.**
-      Files: `backend/game/rules.py`, `backend/tests/test_rules.py`.
-      `compute_damage(attacker, defender, power, spread) -> int` implementing §4.1 exactly, with
-      `spread` passed in as a float so the formula is testable without an RNG.
-      Tests: hand-computed values for each attacking move in both directions (Kaito→Vega and
-      Vega→Kaito) at `spread = 1.0`, and at the 0.90 and 1.10 extremes; ascend multiplier applies;
-      guard halves; the `max(1, ...)` floor holds for a contrived tiny-power / huge-def case;
-      A5's banker's rounding is asserted on at least one exact `.5` case.
+- [ ] **4.1 — Headless match runner.**
+  Files: new `backend/game/arena.py` — `run_ai_match(a_id, b_id, difficulty, seed) -> dict` with
+  `{"winner": "a"|"b", "winner_side", "turns", "status", "log"}`, driving both sides through
+  `ai.choose_action` and `rules.resolve_turn` with a single `random.Random(seed)`; side A is the
+  rules state's `player`, side B its `opponent`. `arena` reports `status: "draw"` with
+  `winner: None` and never resolves it — replaying is the tournament layer's job (B10 / E7.4), and
+  a function that invents a winner would make the drawn attempt unrecordable.
+  Tests: new `backend/tests/test_arena.py` — the same seed and difficulty reproduces log, turns and
+  winner exactly; both sides obey the streak cap over a full match; `turns <= 100`; a mirror matchup
+  runs to a conclusion; no illegal action appears in any log.
 
-- [x] **1.6 Turn order and the tie coin flip.**
-      Files: `backend/game/rules.py`, `backend/tests/test_rules.py`.
-      `effective_spd(fighter)` (`spd + 5` if `ascended`) and `roll_turn_order(state, rng)` per A2/A3:
-      no draw when speeds differ, one `rng.random()` draw when equal.
-      Tests: Kaito (14) before Vega (9) with **zero** RNG draws consumed — assert by comparing
-      `rng.getstate()` before and after; a mirror match consumes exactly one draw and both outcomes
-      are reachable across seeds; an already-`ascended` Vega (14) ties Kaito (14) and triggers a flip;
-      a fighter that ascends *this* turn does not change *this* turn's order (A2).
+- [ ] **4.2 — Strength criteria.**
+  Files: new `backend/tests/test_ai_strength.py`.
+  Tests: `search` beats `random` in ≥70% of 200 fixed seeds; `search` beats `heuristic` in ≥55% of
+  200 fixed seeds; ≥95% of 200 heuristic-vs-heuristic matches end by KO rather than the cap. Record
+  the measured rates in each docstring (E10). Time the file; if the two search suites exceed 180 s
+  combined, apply B9 in order and note the mitigation used.
 
-- [x] **1.7 `resolve_turn` — effects phase.**
-      Files: `backend/game/rules.py`, `backend/tests/test_rules.py`.
-      Steps 2–3 of §4.4: Ascend (pay 40 ki, set `ascended` and `ascend_used`, no damage), then
-      Charge (+25 ki, +30 if `ascended`) and Guard (+8 ki, set `guarding`), both clamped to `ki_max`.
-      Both fighters' effects apply before any attack.
-      Tests: Charge raises ki by exactly 25, by 30 when ascended, and never exceeds `ki_max` from a
-      near-cap start; Guard raises ki by exactly 8; Ascend deducts exactly 40 and latches
-      `ascend_used`; both sides charging in one turn each gain their own ki.
+### 5. Part A endpoints
 
-- [x] **1.8 `resolve_turn` — attack phase, KO, and guard clearing.**
-      Files: `backend/game/rules.py`, `backend/tests/test_rules.py`.
-      Step 4–5: attacks resolve in the order from 1.6, paying ki (§4.2) then applying damage; hp
-      clamps at 0; **a KO stops resolution** so the second fighter does not attack; `guarding` is
-      cleared on both fighters at the end of the turn.
-      Tests: Strike reduces hp by ≥1; ki_blast deducts exactly 15 and surge_beam exactly 40 while
-      strike/charge/guard deduct 0 (§8); Guard halves incoming damage **including when the guarding
-      fighter is slower** (§4.3 — construct Vega guarding against a faster Kaito and compare with the
-      same seed and no guard); `guarding` is `False` in the returned state; a state contrived so the
-      faster fighter's attack drops the other to 0 shows the slower fighter never attacking; after
-      Ascend, damage rises ~25% and `effective_spd` is +5.
+- [ ] **5.1 — `difficulty` on `POST /api/match`.**
+  Files: `backend/app.py` (`_parse_difficulty` → `unknown_difficulty` 400, absent ⇒ `"random"`).
+  Tests: `backend/tests/test_api.py` — each of the three values is accepted and echoed in the
+  payload; an unknown value returns 400 `unknown_difficulty` with the §5.4 envelope and creates **no**
+  match (the store stays empty); a non-string value is rejected the same way; omitting the field
+  still yields `"random"` and a byte-identical payload to Step 1's apart from the two new keys.
 
-- [x] **1.9 Log entries and turn counter.**
-      Files: `backend/game/rules.py`, `backend/tests/test_rules.py`.
-      Step 6: `turn` increments (first resolved turn → `1`, §4.4), and entries carry
-      `turn`/`actor`/`action`/`damage`/`target_hp`/`text` per §5.5, appended in turn order per A7,
-      with the KO-before-acting rule of A8. `text` is prerendered so the client builds no sentences.
-      Tests: fresh match resolving one turn yields `turn == 1` and entries all tagged `"turn": 1`;
-      log is cumulative and oldest-first across three turns; a Guard entry has `damage: 0` and
-      `target_hp` equal to the actor's opponent's unchanged hp; a KO'd second fighter that charged
-      still logs its charge but no attack (A8); a KO'd second fighter that attacked logs nothing.
+- [ ] **5.2 — Turns honour the match's difficulty.**
+  Files: `backend/app.py` (pass `state["difficulty"]` through `ai.play_turn`).
+  Tests: `test_api.py` — same seed + same player actions ⇒ identical logs and final states at *every*
+  difficulty (E10); `legal_actions` is unaffected by difficulty; a rejected turn still leaves the RNG
+  unadvanced at every difficulty (the reject-then-play comparison of §5.4); the AI's logged actions
+  over a played-out heuristic match never break the streak cap.
 
-- [x] **1.10 Win condition and the turn cap.**
-      Files: `backend/game/rules.py`, `backend/tests/test_rules.py`.
-      `check_status(state)`: 0 hp → `player_won`/`opponent_won`; at `turn == 100` with both alive,
-      compare `player.hp * opponent.hp_max` vs `opponent.hp * player.hp_max` (§4.6, integer
-      cross-multiplication — never float division); equal → `draw`.
-      Tests: each KO direction sets the right status; a state constructed at turn 100 with
-      Kaito 50/100 vs Vega 60/130 resolves by cross-product; a **constructed exactly-equal** case
-      (e.g. Kaito 50/100 vs Vega 65/130 → 6500 == 6500) yields `draw`; the comparison is asserted to
-      use integers.
+### 6. Bracket arithmetic (pure, no database)
 
-- [x] **1.11 `resolve_turn` does not mutate its input.**
-      Files: `backend/tests/test_rules.py` (test only — fix `rules.py` if it fails).
-      Test: deep-copy a state, call `resolve_turn`, assert the original is `==` to its copy and that
-      the returned state is a different object (§6, §9).
+- [ ] **6.1 — `backend/game/bracket.py`.**
+  Files: new `backend/game/bracket.py` — `bracket_size(n)`, `seed_order(size)` (E7.1's recursive
+  interleave), `first_round_pairs(roster)` returning `(slot, seed_a, seed_b|None)` with byes on the
+  top `size - n` seeds, `advance_position(round, slot) -> (round+1, slot//2, "a"|"b")`,
+  `match_seed(root, round, slot)`, `round_count(size)`, `InvalidRosterError`.
+  Tests: new `backend/tests/test_bracket.py` — `seed_order` is `[1,2]`, `[1,4,2,3]`,
+  `[1,8,4,5,2,7,3,6]`, and for 16 every round-1 pair sums to `size+1`; sizes and bye counts for
+  `n` in 2..16; `n = 4` gives 2 first-round matches, 1 final, 0 byes; `n = 5` gives size 8, 3 byes on
+  seeds 1–3, matching E7.1's worked table exactly; seeds 1 and 2 land in opposite halves for sizes 4,
+  8 and 16; `n = 2` gives exactly one match which is the final; `n` of 0, 1 and 17 raise
+  `InvalidRosterError`; `advance_position` maps `s` to `s//2` as A for even and B for odd;
+  `match_seed` matches the formula and is distinct across positions.
 
-- [x] **1.12 Opponent choice and the §4.8 draw order.**
-      Files: `backend/game/rules.py`, `backend/tests/test_rules.py`.
-      `choose_opponent_action(state, rng)` per §4.7 + A4: uniform over the opponent's *legal* moves,
-      drawn from the match RNG, never illegal. Add `play_turn(state, player_action, rng)` composing
-      `roll_turn_order` → `choose_opponent_action` → `resolve_turn(..., order=order)`.
-      Tests: the opponent at 0 ki never returns `ki_blast`/`surge_beam`/`ascend`; with `ascend_used`
-      it never returns `ascend`; **draw-order test** — two matches at the same seed with the same
-      player actions produce identical states and logs; a third match that calls the same functions
-      in a different order produces a *different* log, proving the order is actually load-bearing.
+### 7. Persistence layer
 
-- [x] **1.13 Property / fuzz suite.**
-      Files: `backend/tests/test_fuzz.py`.
-      1000 seeded random-vs-random matches (player actions drawn from a **separate** RNG so the match
-      RNG's §4.8 draw order stays intact).
-      Tests, per §8/§9: every match terminates within 100 turns; **≥95% end by KO** rather than the
-      cap; `hp` stays in `[0, hp_max]` and `ki` in `[0, ki_max]` at every turn; no illegal action is
-      ever chosen by either side; run at least one batch as a mirror match. Keep it under a few
-      seconds — it runs on every build iteration.
+- [ ] **7.1 — Dependency, engine and schema bootstrap.**
+  Files: `backend/requirements.txt` (`SQLAlchemy>=2.0.36,<2.1`, B13), new `backend/db.py` (engine for
+  `backend/data/fightinggame.db`, `sessionmaker`, `init_db(engine)`, and a `DATABASE_URL` override so
+  tests can point at a temp file or `sqlite+pysqlite:///:memory:`), `script/setup` (create
+  `backend/data/` and run `init_db`), `backend/app.py` (`init_db` on startup if the schema is absent,
+  E6). Run `./script/setup` to install the dependency.
+  Tests: new `backend/tests/test_db.py` — `init_db` is idempotent; a fresh temp path creates the file
+  and every table; the override is honoured so no test ever writes the real database.
 
-### Phase 2 — HTTP layer (`backend/app.py`), validation → rules → serialize, no rules in routes
+- [ ] **7.2 — Models.**
+  Files: new `backend/models.py` — `Fighter(id)` only (E6.1: stats are never copied out of
+  `fighters.py`), `Tournament`, `TournamentMatch` including `fighter_a_seed` / `fighter_b_seed` /
+  `winner_seed` (E7.2) and the `(tournament_id, round, slot)` unique constraint; `seed_fighters`
+  populating the registry from `game.fighters.FIGHTERS`.
+  Tests: `backend/tests/test_db.py` — every E6.1 column exists with the right nullability; the unique
+  constraint raises on a duplicate `(tournament_id, round, slot)`; `seed_fighters` is idempotent and
+  inserts exactly the ids in `FIGHTERS`; no stat column exists on `Fighter` (asserted by name, so a
+  later "helpful" addition fails).
 
-- [x] **2.1 App factory, in-memory store, and `POST /api/match`.**
-      Files: `backend/app.py`, `backend/tests/test_api.py`.
-      Flask app with `MATCHES: dict[str, dict]` keyed by UUID4 hex (§6). Route returns **201** and
-      the §5.5 state object. `seed` optional; when present it must be an `int` (and **not** a `bool`,
-      since `isinstance(True, int)` is true in Python) or → 400 `invalid_seed`. Unknown fighter id →
-      400 `unknown_fighter`. Errors use the §5.4 envelope `{"error": {"code", "message"}}`.
-      Tests: 201 with both fighters at full hp and 30 ki, `turn: 0`, empty `log`, a UUID4-hex
-      `match_id`; `unknown_fighter` for either side; `invalid_seed` for `"12345"`, `1.5`, and `true`;
-      mirror match accepted (§8).
+### 8. Tournament service
 
-- [x] **2.2 `GET /api/match/<id>` and `match_not_found`.**
-      Files: `backend/app.py`, `backend/tests/test_api.py`.
-      Read-only fetch; unknown id → 404 `match_not_found`, never created on demand (§6).
-      Tests: fetch after create returns a byte-identical payload; two consecutive GETs are identical
-      (no hidden mutation); unknown id → 404 with the right code.
+- [ ] **8.1 — Creation.**
+  Files: new `backend/tournament.py` — `create_tournament(session, name, roster, difficulty, seed)`
+  building the **entire** bracket (later rounds `pending`), pre-resolving byes with `status="bye"`
+  and a `winner_seed`, raising `InvalidRosterError` / `UnknownFighterError` /
+  `UnknownDifficultyError` / invalid-seed.
+  Tests: new `backend/tests/test_tournament.py` — for `n` in 2..16 the row count, round count, bye
+  count and bye placement are right; byes carry a winner and are never played; duplicate ids give
+  that many distinct entrants (a `["kaito","kaito"]` bracket has two rows keyed by seed, not one);
+  every rejection leaves zero rows behind.
 
-- [x] **2.3 Serialization and `legal_actions`.**
-      Files: `backend/app.py`, `backend/tests/test_api.py`.
-      `serialize(match)` emits exactly the §5.5 keys — including `guarding`, always `false` (§5.5) —
-      and computes `legal_actions` for the **player**, empty whenever `status != "in_progress"`.
-      Tests: response keys match §5.5 exactly, no extras and none missing; `legal_actions` agrees
-      with `rules.legal_actions` at every turn of a played-out match; it is `[]` once the match ends
-      (§8).
+- [ ] **8.2 — Advance and propagation.**
+  Files: `backend/tournament.py` — `advance(session, tournament_id)` picking the next `ready` match by
+  lowest round then lowest slot, running it through `arena.run_ai_match` at the derived
+  `match_seed`, storing `winner_*`, `turns` and `attempts_json`, replaying drawn attempts per E7.4, promoting the winner into
+  `round+1, slot//2` as A/B by parity, flipping `pending` → `ready` when both sides are known, and
+  setting `status="complete"` with `champion_id` when the final resolves; `TournamentComplete` and
+  `NoReadyMatch` errors.
+  Tests: `test_tournament.py` — advancing repeatedly reaches `complete` with a champion for roster
+  sizes 2–16; the winner of `r,s` appears at `r+1, s//2` as A for even and B for odd; advancing a
+  complete tournament raises `TournamentComplete`; two tournaments at the same roster/difficulty/seed
+  produce identical champions, logs and turn counts; advancing the same bracket in two different
+  orders produces identical per-position results (E7.3); **a forced draw is replayed, not awarded**
+  — the drawn attempt is stored with `result: "draw"` and no winner, `winner_seed` comes from the
+  decisive attempt, ten consecutive draws leave the match `drawn_out` and the tournament `stalled`,
+  and a tournament containing a replayed draw still reproduces at the same root seed (B10 / E7.4);
+  **persistence** — create, advance, `session.close()` + `engine.dispose()`, rebuild against
+  the same file, and the bracket and standings compare equal.
 
-- [x] **2.4 `POST /api/match/<id>/turn` happy path.**
-      Files: `backend/app.py`, `backend/tests/test_api.py`.
-      Validate the player's action, then call `play_turn` (which draws the opponent's move *after*
-      validation, §4.7). Returns 200 with `log` extended.
-      Tests: `strike` reduces opponent hp by ≥1 and appends ≥1 log entry (§8); `turn` increments by
-      one per request; the log grows monotonically and stays oldest-first.
+- [ ] **8.3 — Bracket serialization and standings.**
+  Files: `backend/tournament.py` — `serialize_bracket(tournament)` producing E8.1 exactly (rounds,
+  per-match `fighter_a`/`fighter_b`/`winner` objects with `id`, `name` and `display` per B11, `turns`,
+  `status`, `champion`), plus derived `standings` (never stored) with `wins`, `losses` and
+  `eliminated_in`, sorted wins desc → name → seed.
+  Tests: `test_tournament.py` — the payload's key set matches E8.1 exactly; standings arithmetic over
+  a full playthrough including `eliminated_in` for every non-champion and `null` for the champion;
+  byes count as neither a win nor a loss; two same-fighter entrants get two rows with distinct
+  `display` strings (`"Kaito (1)"`, `"Kaito (2)"`) and never merge.
 
-- [x] **2.5 Turn error codes, with state left unchanged.**
-      Files: `backend/app.py`, `backend/tests/test_api.py`.
-      `unknown_action` (unknown id **or missing `action`**, §5.4), `insufficient_ki`,
-      `already_ascended`, `match_over` (409), in the A6 precedence order.
-      Tests: one test per code; each re-GETs the match and asserts the payload is identical to
-      before; `surge_beam` at ki < 40 → 400 `insufficient_ki` (§8); a second `ascend` → 400
-      `already_ascended` and nothing changes (§8); a turn on a finished match → 409 `match_over`
-      (§8); missing `action` and an empty body both → `unknown_action`; A6 precedence is asserted
-      with an `ascend` that is both already-used and unaffordable.
+### 9. Tournament endpoints
 
-- [x] **2.6 A rejected turn does not advance the RNG.**
-      Files: `backend/tests/test_api.py`.
-      The §5.4 / §8 criterion that a state comparison cannot catch.
-      Test: at a fixed seed, play N legal turns → record final state. At the same seed, submit an
-      illegal turn (400) *between* two of those legal turns and play the identical legal sequence;
-      assert the final states and logs are identical. Repeat with a 409 on a finished match.
+- [ ] **9.1 — `POST /api/tournament` and `GET /api/tournament/<id>`.**
+  Files: `backend/app.py` (validation → `tournament.py` → serialize; a request-scoped session).
+  Tests: new `backend/tests/test_tournament_api.py` — 201 with the E8.1 bracket; `GET` returns the
+  same object and is read-only; `invalid_roster` (sizes 0, 1, 17), `unknown_fighter`,
+  `unknown_difficulty`, `invalid_seed` each 400 with the §5.4 envelope, and each asserting **no**
+  tournament row was created; `tournament_not_found` → 404.
 
-- [x] **2.7 End-to-end API determinism and a playable mirror match.**
-      Files: `backend/tests/test_api.py`.
-      Tests: two matches created with the same `seed` and given the same action sequence produce
-      **identical** logs and final states (§8); a `kaito` vs `kaito` match is played through the API
-      to a terminal `status` (§8); a match played to completion has `legal_actions == []`.
+- [ ] **9.2 — `POST /api/tournament/<id>/advance` and `GET /api/tournaments`.**
+  Files: `backend/app.py`.
+  Tests: `test_tournament_api.py` — `advance` returns 200 and the updated bracket, and repeated calls
+  reach a champion; `tournament_complete` → 409 and the bracket is unchanged afterwards;
+  `no_ready_match` → 409; `tournament_not_found` → 404; the list endpoint returns
+  `id, name, status, champion, created_at` newest first, and a second app instance built over the
+  same database file still lists the tournament (the restart criterion, at the HTTP layer).
 
-### Phase 3 — Frontend (`frontend/src/`), thin renderer only
+### 10. Frontend
 
-- [x] **3.1 Types and the API module.**
-      Files: `frontend/src/types.ts`, `frontend/src/api.ts`, `frontend/src/api.test.ts`.
-      `MatchState`, `Fighter`, `LogEntry`, `ApiError` mirroring §5.5. A single typed module owning
-      **all** `fetch` calls (§6) against relative `/api/...` paths — no base URL, no hostnames.
-      `createMatch`, `getMatch`, `submitTurn`; non-2xx responses are parsed into the §5.4 envelope
-      and thrown as a typed error.
-      Tests: with `fetch` stubbed, each function hits the right relative path and method; a 400 body
-      is surfaced as an error carrying `code` and `message`; no absolute URL appears in the module.
+- [ ] **10.1 — Types and API module.**
+  Files: `frontend/src/types.ts` (`Difficulty`, `Bracket`, `BracketRound`, `BracketMatch`,
+  `StandingsRow`, `TournamentSummary`, the new error codes), `frontend/src/api.ts`
+  (`createMatch(..., difficulty)`, `createTournament`, `getTournament`, `advanceTournament`,
+  `listTournaments`).
+  Tests: `frontend/src/api.test.ts` — each new call hits the right relative `/api/...` path with the
+  right method and body, parses the payload, and throws `ApiError` carrying the server's code.
 
-- [x] **3.2 HP and ki bars.**
-      Files: `frontend/src/components/StatBars.tsx`, `frontend/src/components/StatBars.test.tsx`.
-      Per fighter: an hp bar and a ki bar, each showing current/max **numerically as well as by
-      width** (§7).
-      Tests: given a fighter at 78/100 hp and 15/100 ki, the text `78 / 100` and `15 / 100` render
-      and the bar widths are 78% and 15%; 0 hp renders a 0% width without collapsing the layout;
-      Vega's 130 max scales correctly (width is a fraction of max, not an absolute).
+- [ ] **10.2 — Difficulty selector (E5).**
+  Files: new `frontend/src/components/DifficultySelect.tsx`, `frontend/src/MatchScreen.tsx`.
+  Tests: new `DifficultySelect.test.tsx` and `MatchScreen.test.tsx` — the selector defaults to
+  `random`, offers all three values, is **disabled** once a match is in progress, the current
+  difficulty is displayed during the match, and starting a new match sends the chosen value.
 
-- [x] **3.3 Move buttons.**
-      Files: `frontend/src/components/MoveButtons.tsx`,
-      `frontend/src/components/MoveButtons.test.tsx`.
-      All six buttons, always rendered, each showing its ki cost. A button is disabled **iff** its
-      action is absent from `legal_actions` (§7) — the component reads `legal_actions` as data and
-      reimplements no rule. Also disabled while `busy` is true (§7).
-      Tests: with `legal_actions: ["strike","charge","guard"]`, exactly those three are enabled and
-      the other three are disabled; ki costs 0/15/40/0/0/40 are visible; with `busy` true every
-      button is disabled even when legal; clicking fires `onSelect` with the action id; with
-      `legal_actions: []` nothing is clickable.
+- [ ] **10.3 — Bracket rendering (E9).**
+  Files: new `frontend/src/components/Bracket.tsx`, `frontend/src/components/Standings.tsx`.
+  Tests: new `Bracket.test.tsx`, `Standings.test.tsx` — rounds render in order with every match;
+  winners are visibly marked; byes are labelled and show no turn count; the champion is called out
+  when `status === "complete"` and not before; two same-fighter entrants render distinct
+  `display` labels; standings rows show wins, losses and `eliminated_in`.
 
-- [x] **3.4 Battle log.**
-      Files: `frontend/src/components/BattleLog.tsx`, `frontend/src/components/BattleLog.test.tsx`.
-      Scrolling list rendered from `log[].text` only, oldest first, newest visible (§7).
-      Tests: three entries render in oldest-first order with the exact `text` strings; the component
-      builds no sentences of its own (assert rendered text equals the input text); an empty log
-      renders without crashing.
+- [ ] **10.4 — Tournament screen and navigation.**
+  Files: new `frontend/src/TournamentScreen.tsx`, `frontend/src/App.tsx` (a state toggle between
+  Arena and Tournament — no router dependency, E9).
+  Tests: new `TournamentScreen.test.tsx`, updated `App.test.tsx` — the create form posts roster,
+  difficulty and seed; **Advance** calls the endpoint once per click, is disabled while a request is
+  in flight and once the tournament is complete, and re-renders the returned bracket; the past
+  tournaments list renders newest first; an API error renders a readable message without discarding
+  the bracket on screen; the toggle switches views and back.
 
-- [x] **3.5 Result screen.**
-      Files: `frontend/src/components/ResultScreen.tsx`,
-      `frontend/src/components/ResultScreen.test.tsx`.
-      Shown when `status` leaves `in_progress`, with a "new match" action (§7).
-      Tests: `player_won`, `opponent_won` and `draw` each render their own message; a "new match"
-      control is present and fires its callback; nothing renders while `in_progress`.
+### 11. Acceptance sweep
 
-- [x] **3.6 Match screen wiring.**
-      Files: `frontend/src/App.tsx`, `frontend/src/MatchScreen.tsx`,
-      `frontend/src/MatchScreen.test.tsx`.
-      Compose 3.2–3.5 over one `MatchState`; create a match on mount; on a move click call
-      `submitTurn` and replace state with the response. The client computes no damage and no
-      legality (§1, §6). Set `busy` for the duration of the request so a double-click cannot submit
-      two turns (§7). Surface an API error as a readable message without wedging the UI.
-      Tests: with `api` mocked, mount creates a match and renders both fighters; clicking a move
-      submits once and re-renders from the response; **a second click while the first request is
-      in flight submits only one turn**; a terminal status swaps in the result screen; "new match"
-      creates a fresh match without a page reload.
-
-### Phase 4 — Whole-system verification
-
-- [x] **4.1 Manual end-to-end pass through the proxy.**
-      Files: none (verification), then `running.md`.
-      Run `./script/server`, open `http://localhost:5173`, play a full match to a win screen with no
-      page reload, and confirm the browser console shows **no CORS errors** and requests go to
-      `/api/...` on `:5173` via the Vite proxy (§6, §8). Then replace the placeholder text in
-      `running.md` with the real setup/run/test instructions and a short "how to play" note.
-      No automated test — this is the one criterion that requires a browser. Record the result.
-
-- [x] **4.2 Final acceptance sweep.**
-      Files: none (verification only).
-      Walk §8's checklist item by item and name the test that proves each one; every item must map to
-      a real assertion (or, for the single browser item, to 4.1). Confirm `./script/test` passes with
-      zero failures and `./script/lint` is clean. Confirm no stubs, placeholders or TODOs remain
-      (AGENTS.md). Only after this is the spec satisfied.
+- [ ] **11.1 — Walk every E10 criterion against the suite.**
+  For each of the 30 checkboxes in E10 (15 AI, 15 tournament), name the test that proves it
+  (file + test name) in
+  `running.md`; anything unproven becomes a new test in this task, not a checked box. Confirm the
+  `specs/base.md` §5.5 edits from 1.1/1.2 are in place and that no other Step 1 criterion changed.
+  Then run `./script/setup`, `./script/test` and `./script/lint` from clean, and record in
+  `running.md` the measured search-move time, the three strength rates, and the strength-suite
+  runtime with any B9 mitigation applied.

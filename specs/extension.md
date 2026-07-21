@@ -270,8 +270,8 @@ something else. The table exists only to give `TournamentMatch` a foreign key to
 | `fighter_a_id`, `fighter_b_id` | str, FK, nullable | Null = not yet determined, or a bye |
 | `winner_id` | str, FK, nullable | |
 | `status` | str | `pending` / `ready` / `complete` / `bye` |
-| `turns` | int, nullable | Turns the match took |
-| `log_json` | text, nullable | The finished match's battle log |
+| `turns` | int, nullable | Turns the decisive attempt took |
+| `attempts_json` | text, nullable | Every attempt: `[{attempt, result, turns, log}]`. A drawn attempt has `result: "draw"` and no winner (E7.4). Usually a single entry. |
 
 `(tournament_id, round, slot)` is **unique** — the bracket position identifies the match.
 
@@ -343,11 +343,33 @@ Display uses `"Kaito (2)"` so two entrants of the same fighter are distinguishab
 Each tournament match derives its seed deterministically:
 
 ```
-match_seed = (tournament.seed * 1_000_003 + round * 1_009 + slot) % 2**32
+match_seed(attempt) = (tournament.seed * 1_000_003 + round * 1_009 + slot + attempt) % 2**32
 ```
 
-So replaying a tournament from the same root seed reproduces every match exactly, and a match's
-result does not depend on the order in which matches were played.
+`attempt` starts at 0. So replaying a tournament from the same root seed reproduces every match
+exactly, and a match's result does not depend on the order in which matches were played.
+
+### E7.4 A drawn match is replayed, never awarded
+
+Base §4.6 allows `draw` — both fighters alive at the 100-turn cap with exactly equal HP fractions.
+A single-elimination slot still has to send someone to the next round.
+
+**A drawn attempt is recorded as a draw with no winner, and the same pairing is immediately
+replayed at `attempt + 1`, until an attempt is decisive.** No fighter is ever awarded a match it did
+not win, and the bracket always reaches a champion.
+
+- Every attempt is persisted: `TournamentMatch.attempts` is a list of `{attempt, result, turns,
+  log}` entries, and a drawn attempt has `result: "draw"` and no winner.
+- `winner_seed` is set only from the decisive attempt.
+- The replay is deterministic — `attempt` feeds the seed — so a replayed tournament reproduces the
+  same sequence of draws and the same eventual winner.
+- **A hard cap of 10 attempts.** If all ten draw, the match is left `status: "drawn_out"` and the
+  tournament is `status: "stalled"` rather than inventing a winner. This should be unreachable
+  (E10 requires ≥95% of matches to end by KO, so ten consecutive draws at *different* seeds is
+  vanishingly unlikely), but an unbounded loop inside a request handler is not acceptable, and
+  "unreachable" states that are silently absent are how servers hang.
+- Draws are rare by construction, so this path is expected to be exercised only by a test that
+  forces it with a crafted state.
 
 ## E8. Tournament API
 
@@ -450,6 +472,12 @@ Routing may be a simple state toggle rather than a router dependency.
 - [ ] A 2-fighter roster produces exactly one match, which is the final.
 - [ ] Rosters of size 0, 1 and 17 are rejected with `invalid_roster`.
 - [ ] Advancing repeatedly reaches `complete` with a `champion` for roster sizes 2–16.
+- [ ] A pairing forced to draw is **replayed, not awarded**: the drawn attempt is recorded with
+      `result: "draw"` and no winner, the next attempt runs at `attempt + 1`, and `winner_seed`
+      comes only from the decisive attempt.
+- [ ] Ten consecutive drawn attempts leave the match `drawn_out` and the tournament `stalled`
+      rather than looping forever or inventing a winner.
+- [ ] A tournament containing a replayed draw still reproduces exactly at the same root seed.
 - [ ] `advance` on a complete tournament → 409 `tournament_complete`.
 - [ ] The winner of round `r` slot `s` appears in round `r+1` slot `s // 2`, as A for even `s`
       and B for odd `s`.
@@ -478,11 +506,11 @@ Routing may be a simple state toggle rather than a router dependency.
 - The chance node produces three children for an attack and one when neither side attacks.
 - A one-move-from-lethal position is solved correctly at depth 1.
 - Tie-breaking follows canonical action order.
-- The 100 ms budget, asserted on a worst-case position (both sides at full ki, all moves legal).
+- The 150 ms budget (E3.5), asserted on a worst-case position (both sides at full ki, all moves legal).
 
 **Strength — `backend/tests/test_ai_strength.py`** (seeded, so results are stable):
-- search vs random over 100 seeds, ≥70% wins.
-- search vs heuristic over 100 seeds, ≥55% wins.
+- search vs random over 200 seeds, ≥70% wins.
+- search vs heuristic over 200 seeds, ≥55% wins.
 - heuristic vs heuristic over 200 seeds, ≥95% end by KO.
 
 **DB — `backend/tests/test_tournament.py`** (in-memory or a temp file):
