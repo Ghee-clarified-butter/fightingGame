@@ -257,7 +257,7 @@ Not used: `flask-cors` (see A9), `requests`, any state/fetch library.
 
 ### Phase 2 — HTTP layer (`backend/app.py`), validation → rules → serialize, no rules in routes
 
-- [ ] **2.1 App factory, in-memory store, and `POST /api/match`.**
+- [x] **2.1 App factory, in-memory store, and `POST /api/match`.**
       Files: `backend/app.py`, `backend/tests/test_api.py`.
       Flask app with `MATCHES: dict[str, dict]` keyed by UUID4 hex (§6). Route returns **201** and
       the §5.5 state object. `seed` optional; when present it must be an `int` (and **not** a `bool`,
