@@ -267,7 +267,7 @@ Not used: `flask-cors` (see A9), `requests`, any state/fetch library.
       `match_id`; `unknown_fighter` for either side; `invalid_seed` for `"12345"`, `1.5`, and `true`;
       mirror match accepted (§8).
 
-- [ ] **2.2 `GET /api/match/<id>` and `match_not_found`.**
+- [x] **2.2 `GET /api/match/<id>` and `match_not_found`.**
       Files: `backend/app.py`, `backend/tests/test_api.py`.
       Read-only fetch; unknown id → 404 `match_not_found`, never created on demand (§6).
       Tests: fetch after create returns a byte-identical payload; two consecutive GETs are identical

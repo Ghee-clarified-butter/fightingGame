@@ -97,6 +97,15 @@ def create_app() -> Flask:
         }
         return jsonify(serialize(match_id, state)), 201
 
+    @app.get("/api/match/<match_id>")
+    def get_match(match_id: str):
+        # Read-only (§5.3): an unknown id is a 404, never a match created on
+        # demand — otherwise a typo'd id would silently start a new fight.
+        match = matches.get(match_id)
+        if match is None:
+            return _error("match_not_found", f"No match with id {match_id!r}.", 404)
+        return jsonify(serialize(match_id, match["state"])), 200
+
     return app
 
 

@@ -130,6 +130,50 @@ def test_mirror_fighters_are_independent_copies(client):
     assert state["opponent"]["hp"] == 100
 
 
+def test_get_returns_the_same_payload_the_create_returned(client):
+    created = create(client)
+    match_id = created.get_json()["match_id"]
+
+    fetched = client.get(f"/api/match/{match_id}")
+
+    assert fetched.status_code == 200
+    assert fetched.get_data() == created.get_data()
+
+
+def test_two_consecutive_gets_are_identical(client):
+    match_id = create(client).get_json()["match_id"]
+
+    first = client.get(f"/api/match/{match_id}")
+    second = client.get(f"/api/match/{match_id}")
+
+    assert first.get_data() == second.get_data()
+
+
+def test_get_never_creates_a_match_on_demand(client):
+    app = create_app()
+    response = app.test_client().get(f"/api/match/{uuid.uuid4().hex}")
+
+    assert response.status_code == 404
+    assert response.get_json()["error"]["code"] == "match_not_found"
+    assert app.extensions["matches"] == {}
+
+
+@pytest.mark.parametrize("match_id", ["not-a-uuid", "0" * 32, uuid.uuid4().hex])
+def test_an_unknown_match_id_is_a_404(client, match_id):
+    response = client.get(f"/api/match/{match_id}")
+
+    assert response.status_code == 404
+    assert response.get_json()["error"]["code"] == "match_not_found"
+
+
+def test_get_isolates_matches_from_one_another(client):
+    mirror = create(client, "kaito", "kaito").get_json()["match_id"]
+    standard = create(client).get_json()["match_id"]
+
+    assert client.get(f"/api/match/{mirror}").get_json()["opponent"]["id"] == "kaito"
+    assert client.get(f"/api/match/{standard}").get_json()["opponent"]["id"] == "vega"
+
+
 def test_a_seeded_match_stores_a_reproducible_rng(client):
     app = create_app()
     ids = [
