@@ -33,7 +33,11 @@ PIDS+=($!)
 
 if [ -f frontend/package.json ]; then
   echo "==> Frontend on http://localhost:$FRONTEND_PORT"
-  (cd frontend && npm run dev -- --port "$FRONTEND_PORT") &
+  # --strictPort: without it Vite silently falls back to the next free port when
+  # FRONTEND_PORT is taken. You then get a working-looking app on :5174 whose /api
+  # proxy still points at this run's backend, while the browser tab you actually
+  # opened is served by some other, older instance. Fail loudly instead.
+  (cd frontend && npm run dev -- --port "$FRONTEND_PORT" --strictPort) &
   PIDS+=($!)
 else
   echo "frontend/package.json not found yet - backend only."

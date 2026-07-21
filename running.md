@@ -23,11 +23,25 @@ Ctrl+C stops both. The client only ever requests relative `/api/...` paths; Vite
 Flask, so the browser makes same-origin requests and no CORS configuration exists anywhere in the
 backend (specs/base.md §6).
 
-If something else on your machine already owns port 5000 (Flask then exits with *"An attempt was
-made to access a socket in a way forbidden by its access permissions"* or *"Address already in
-use"*), override the port — the Vite proxy target follows the same variable:
+### If port 5000 is already taken
+
+Port 5000 is a popular default, so this is common. Flask exits immediately with *"Address already
+in use"*, or on Windows *"An attempt was made to access a socket in a way forbidden by its access
+permissions"*. Override it — the Vite proxy target follows the same variable:
 
     BACKEND_PORT=5055 ./script/server        # FRONTEND_PORT overrides :5173 the same way
+
+Two things make this collision confusing enough to be worth spelling out:
+
+- **The app still loads, and then reports `404`.** Vite happily proxies `/api` to whatever is on
+  port 5000. If that is an HTTP service, the browser shows a running UI whose first request fails.
+  On the development machine here it was a `registry:2` Docker container inside WSL — WSL2 mirrors
+  its listening sockets onto Windows `localhost`, so Windows `netstat` showed *nothing* on 5000
+  while connections to it succeeded. A `404` in this app is worth checking against the backend
+  before assuming it is an application bug.
+- **A busy `:5173` used to be silent.** Vite's default is to shift to the next free port, so you
+  could end up reading a stale tab on `:5174`. `./script/server` now passes `--strictPort`, so a
+  taken frontend port is a hard failure rather than a quiet redirection.
 
 ## Test
     ./script/test          # pytest (backend) + vitest (frontend)
@@ -71,9 +85,17 @@ against the running pair, every request going to a relative `/api/...` path on t
 - Port 5000 was occupied by an unrelated service on the verification machine, so the backend ran on
   `BACKEND_PORT=5055`; the proxy followed it, which is what that override exists for.
 
-The one thing this did not cover is a human clicking through a real browser and reading its console.
-The equivalent behaviour is asserted in `frontend/src/MatchScreen.test.tsx` (mount → play → result
-screen → new match, with no reload), and CORS is ruled out at the HTTP level above.
+That HTTP-level pass could not cover a human in a real browser, so one followed (2026-07-21). The
+app was opened at `http://localhost:5173` and rendered a live match: Kaito 100/100 HP and 30/100 ki
+against Vega 130/130 HP, HP and ki bars showing both a filled width and the numbers, all six moves
+listed with their ki costs, and an empty battle log at turn 0.
+
+**Surge Beam and Ascend rendered disabled** — both cost 40 ki against a 30 ki pool — while Strike,
+Ki Blast, Charge and Guard stayed enabled. That is the server's `legal_actions` driving the UI: the
+client applies no rule of its own, it renders what the backend says is allowed (§6, §7).
+
+The equivalent flow end to end (mount → play → result screen → new match, with no reload) is
+asserted in `frontend/src/MatchScreen.test.tsx`, and CORS is ruled out at the HTTP level above.
 
 ## Extension features
 - (Step 2) Choose AI difficulty on the match screen.
