@@ -674,3 +674,86 @@ def test_the_route_resolves_the_turn_the_rules_would(client):
         assert state["opponent"] == expected["opponent"]
         assert state["log"] == expected["log"]
         assert state["status"] == expected["status"]
+
+
+# --- End-to-end determinism and a playable mirror match (§8) ----------------
+#
+# The tests above pin single turns; these play whole matches through the API
+# only, which is the surface a reviewer actually checks. Strike, Charge and
+# Guard are legal in every state (§4.2), so a cycle of the three needs no
+# legality lookup — the sequence is fixed up front and cannot quietly branch on
+# the very determinism it is meant to prove.
+
+ALWAYS_LEGAL = ("strike", "charge", "guard")
+
+
+def play_cycle_to_the_end(client, match_id):
+    """Cycle ALWAYS_LEGAL through the API until the match reaches a terminal
+    status, returning ``(final_state, actions_played)``."""
+    actions = []
+    state = client.get(f"/api/match/{match_id}").get_json()
+    while state["status"] == rules.STATUS_IN_PROGRESS:
+        # The turn cap (§4.6) bounds this loop; a match still running past it
+        # would mean the cap never fired, so fail loudly rather than hang.
+        assert len(actions) < 100, "match ran past the §4.6 turn cap"
+        action = ALWAYS_LEGAL[len(actions) % len(ALWAYS_LEGAL)]
+        assert action in state["legal_actions"]
+        state = play_sequence(client, match_id, [action])
+        actions.append(action)
+    return state, actions
+
+
+def test_the_same_seed_and_actions_produce_identical_matches(client):
+    first_id = seeded(client, 99991)
+    first, actions = play_cycle_to_the_end(client, first_id)
+
+    second_id = seeded(client, 99991)
+    second = play_sequence(client, second_id, actions)
+
+    assert first_id != second_id
+    assert second["log"] == first["log"]
+    assert second == dict(first, match_id=second_id)
+
+
+def test_different_seeds_diverge(client):
+    """The determinism above is a property of the seed, not of a fixed script."""
+    logs = []
+    for seed in (1, 2, 3, 4, 5):
+        final, _ = play_cycle_to_the_end(client, seeded(client, seed))
+        logs.append(tuple(entry["text"] for entry in final["log"]))
+
+    assert len(set(logs)) > 1
+
+
+def test_a_mirror_match_plays_through_to_a_conclusion(client):
+    """kaito vs kaito, created and played to the end over HTTP alone (§8)."""
+    match_id = seeded(client, 5150, "kaito", "kaito")
+    state, actions = play_cycle_to_the_end(client, match_id)
+
+    assert actions, "the match ended before a single turn was played"
+    assert state["turn"] == len(actions)
+    assert state["status"] in {
+        rules.STATUS_PLAYER_WON,
+        rules.STATUS_OPPONENT_WON,
+        rules.STATUS_DRAW,
+    }
+    # Both sides are Kaito, so the two fighters stay independent objects only if
+    # ``new_fighter`` copied its template (§2.1) — a shared dict would leave the
+    # loser's hp showing on the winner too.
+    if state["status"] == rules.STATUS_PLAYER_WON:
+        assert state["opponent"]["hp"] == 0
+        assert state["player"]["hp"] > 0
+    elif state["status"] == rules.STATUS_OPPONENT_WON:
+        assert state["player"]["hp"] == 0
+        assert state["opponent"]["hp"] > 0
+
+
+def test_a_finished_match_offers_no_legal_actions(client):
+    state, _ = play_cycle_to_the_end(client, seeded(client, 5150, "kaito", "kaito"))
+
+    assert state["status"] != rules.STATUS_IN_PROGRESS
+    assert state["legal_actions"] == []
+    # And it stays empty on a re-fetch: emptiness is derived from status, not a
+    # one-off in the turn response.
+    refetched = client.get(f"/api/match/{state['match_id']}").get_json()
+    assert refetched["legal_actions"] == []

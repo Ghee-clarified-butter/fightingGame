@@ -305,7 +305,7 @@ Not used: `flask-cors` (see A9), `requests`, any state/fetch library.
       illegal turn (400) *between* two of those legal turns and play the identical legal sequence;
       assert the final states and logs are identical. Repeat with a 409 on a finished match.
 
-- [ ] **2.7 End-to-end API determinism and a playable mirror match.**
+- [x] **2.7 End-to-end API determinism and a playable mirror match.**
       Files: `backend/tests/test_api.py`.
       Tests: two matches created with the same `seed` and given the same action sequence produce
       **identical** logs and final states (§8); a `kaito` vs `kaito` match is played through the API
