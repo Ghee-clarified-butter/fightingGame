@@ -369,7 +369,7 @@ Not used: `flask-cors` (see A9), `requests`, any state/fetch library.
 
 ### Phase 4 — Whole-system verification
 
-- [ ] **4.1 Manual end-to-end pass through the proxy.**
+- [x] **4.1 Manual end-to-end pass through the proxy.**
       Files: none (verification), then `running.md`.
       Run `./script/server`, open `http://localhost:5173`, play a full match to a win screen with no
       page reload, and confirm the browser console shows **no CORS errors** and requests go to

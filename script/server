@@ -3,6 +3,12 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
+# Both ports are overridable so a machine where something else already owns 5000
+# can still run the pair. Vite reads BACKEND_PORT too, so its /api proxy follows.
+BACKEND_PORT="${BACKEND_PORT:-5000}"
+FRONTEND_PORT="${FRONTEND_PORT:-5173}"
+export BACKEND_PORT FRONTEND_PORT
+
 . script/_common
 
 if [ ! -f backend/app.py ]; then
@@ -21,13 +27,13 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-echo "==> Backend on http://localhost:5000"
-(cd backend && FLASK_APP=app.py "../$VENV_PY" -m flask run --port 5000) &
+echo "==> Backend on http://localhost:$BACKEND_PORT"
+(cd backend && FLASK_APP=app.py "../$VENV_PY" -m flask run --port "$BACKEND_PORT") &
 PIDS+=($!)
 
 if [ -f frontend/package.json ]; then
-  echo "==> Frontend on http://localhost:5173"
-  (cd frontend && npm run dev -- --port 5173) &
+  echo "==> Frontend on http://localhost:$FRONTEND_PORT"
+  (cd frontend && npm run dev -- --port "$FRONTEND_PORT") &
   PIDS+=($!)
 else
   echo "frontend/package.json not found yet - backend only."
