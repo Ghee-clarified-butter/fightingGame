@@ -9,6 +9,7 @@ const STATE: MatchState = {
   match_id: "9f2c1e",
   status: "in_progress",
   turn: 0,
+  difficulty: "random",
   player: {
     id: "kaito",
     name: "Kaito",

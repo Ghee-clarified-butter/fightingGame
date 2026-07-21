@@ -23,7 +23,7 @@ from game.rules import (
 
 def test_fresh_match_has_the_spec_shape():
     match = new_match("kaito", "vega")
-    assert set(match) == {"status", "turn", "player", "opponent", "log"}
+    assert set(match) == {"status", "turn", "difficulty", "player", "opponent", "log"}
     assert match["status"] == "in_progress"
     assert match["turn"] == 0
     assert match["log"] == []
@@ -41,6 +41,28 @@ def test_fresh_match_fighters_start_full():
 
     assert match["player"]["id"] == "kaito"
     assert match["opponent"]["id"] == "vega"
+
+
+def test_fresh_match_defaults_to_the_random_difficulty():
+    """E1: omitting the setting reproduces the Step 1 opponent (B5)."""
+    assert new_match("kaito", "vega")["difficulty"] == "random"
+
+
+@pytest.mark.parametrize("difficulty", ["random", "heuristic", "search"])
+def test_fresh_match_carries_the_difficulty_it_was_given(difficulty):
+    assert new_match("kaito", "vega", difficulty)["difficulty"] == difficulty
+
+
+def test_new_match_does_not_validate_the_difficulty():
+    """B5: the accepted set is the HTTP layer's business, not the rules' (§6)."""
+    assert new_match("kaito", "vega", "nonsense")["difficulty"] == "nonsense"
+
+
+def test_the_difficulty_survives_a_resolved_turn():
+    """The policy is fixed at creation, so every later turn can read it back."""
+    state = new_match("kaito", "vega", "heuristic")
+    state, _ = resolve_turn(state, "strike", "guard", random.Random(1))
+    assert state["difficulty"] == "heuristic"
 
 
 def test_mirror_match_sides_are_independent():

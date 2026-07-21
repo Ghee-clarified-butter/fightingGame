@@ -37,6 +37,7 @@ def serialize(match_id: str, state: dict) -> dict:
         "match_id": match_id,
         "status": state["status"],
         "turn": state["turn"],
+        "difficulty": state["difficulty"],
         "player": dict(state["player"]),
         "opponent": dict(state["opponent"]),
         "legal_actions": rules.legal_actions(state["player"]) if playable else [],

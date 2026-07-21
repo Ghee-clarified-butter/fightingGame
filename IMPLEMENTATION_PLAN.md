@@ -172,7 +172,7 @@ installed is the whole stack.
   other side attacked. `test_api.py::test_the_payload_has_exactly_the_spec_keys` still passes with
   the widened `FIGHTER_KEYS`.
 
-- [ ] **1.2 — Add `difficulty` to the match state and the §5.5 payload.**
+- [x] **1.2 — Add `difficulty` to the match state and the §5.5 payload.**
   Files: `backend/game/rules.py` (`new_match(player_id, opponent_id, difficulty="random")` per B5),
   `backend/app.py` (`serialize` emits `"difficulty"`), `specs/base.md` §5.5 (add the top-level key),
   `backend/tests/test_api.py` (`STATE_KEYS`), `frontend/src/types.ts` (`MatchState.difficulty`).

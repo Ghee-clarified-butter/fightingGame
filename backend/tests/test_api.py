@@ -10,7 +10,16 @@ from game import rules
 
 # The §5.5 payload, key for key. Written out literally rather than derived from
 # the code so a field that quietly appears or disappears fails a test.
-STATE_KEYS = {"match_id", "status", "turn", "player", "opponent", "legal_actions", "log"}
+STATE_KEYS = {
+    "match_id",
+    "status",
+    "turn",
+    "difficulty",
+    "player",
+    "opponent",
+    "legal_actions",
+    "log",
+}
 FIGHTER_KEYS = {
     "id",
     "name",
@@ -230,6 +239,27 @@ def test_the_payload_has_exactly_the_spec_keys(client):
     assert set(state) == STATE_KEYS
     assert set(state["player"]) == FIGHTER_KEYS
     assert set(state["opponent"]) == FIGHTER_KEYS
+
+
+def test_a_match_created_without_a_difficulty_reports_random(client):
+    """E1/E10: the default is the Step 1 opponent, and it is visible in §5.5."""
+    assert create(client).get_json()["difficulty"] == "random"
+
+
+def test_the_difficulty_is_reported_on_every_read_of_the_match(client):
+    """It is fixed at creation, so GET and a played turn both echo it back."""
+    app = create_app()
+    match_id = (
+        app.test_client()
+        .post(
+            "/api/match",
+            json={"player_fighter": "kaito", "opponent_fighter": "vega", "seed": 7},
+        )
+        .get_json()["match_id"]
+    )
+
+    assert advance(app, match_id, "strike")["difficulty"] == "random"
+    assert app.test_client().get(f"/api/match/{match_id}").get_json()["difficulty"] == "random"
 
 
 def test_log_entries_have_exactly_the_spec_keys(client):

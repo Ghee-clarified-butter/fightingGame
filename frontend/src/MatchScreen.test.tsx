@@ -18,6 +18,7 @@ function state(overrides: Partial<MatchState> = {}): MatchState {
     match_id: "m1",
     status: "in_progress",
     turn: 0,
+    difficulty: "random",
     player: {
       id: "kaito",
       name: "Kaito",

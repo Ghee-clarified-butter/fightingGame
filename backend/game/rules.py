@@ -28,17 +28,24 @@ CHARGE_KI_ASCENDED = 30
 GUARD_KI = 8
 
 
-def new_match(player_id: str, opponent_id: str) -> dict:
+def new_match(player_id: str, opponent_id: str, difficulty: str = "random") -> dict:
     """Return a fresh match state (§4.4, §5.5).
 
     Creation consumes no RNG draws — §4.8 allows a draw only when the step that
     needs it actually occurs — so no ``rng`` argument is taken.
+
+    ``difficulty`` (extension E1, B5) is stored at the top level of the state so
+    serialization stays a no-op and every later turn can read the policy the
+    match was created with. It is **not** validated here: the set of accepted
+    values is an HTTP concern (§6, no rules in the routes and no routing in the
+    rules), so the app layer rejects an unknown one before it ever gets this far.
 
     Raises ``UnknownFighterError`` for an unknown fighter id.
     """
     return {
         "status": STATUS_IN_PROGRESS,
         "turn": 0,
+        "difficulty": difficulty,
         "player": new_fighter(player_id),
         "opponent": new_fighter(opponent_id),
         "log": [],

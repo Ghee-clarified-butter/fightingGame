@@ -257,6 +257,7 @@ same seed produces without the rejected attempt in between.
   "match_id": "9f2c1e...",
   "status": "in_progress",
   "turn": 3,
+  "difficulty": "random",
   "player": {
     "id": "kaito", "name": "Kaito",
     "hp": 78, "hp_max": 100, "ki": 15, "ki_max": 100,
@@ -276,6 +277,9 @@ same seed produces without the rejected attempt in between.
 ```
 
 `status` ∈ `in_progress` | `player_won` | `opponent_won` | `draw`.
+
+`difficulty` is the AI policy the match was created with (extension E1); it is fixed at creation and
+defaults to `random`, which is the Step 1 behavior.
 
 `legal_actions` is computed server-side for the **player**, so the UI can disable buttons without
 duplicating rule logic. This is the one piece of rule knowledge the client is allowed to consume —

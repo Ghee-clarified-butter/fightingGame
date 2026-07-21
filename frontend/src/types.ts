@@ -22,6 +22,9 @@ export type Status = "in_progress" | "player_won" | "opponent_won" | "draw";
 
 export type Actor = "player" | "opponent";
 
+/** The three AI policies of E1; fixed at match creation. */
+export type Difficulty = "random" | "heuristic" | "search";
+
 export interface Fighter {
   id: string;
   name: string;
@@ -54,6 +57,8 @@ export interface MatchState {
   match_id: string;
   status: Status;
   turn: number;
+  /** The AI policy this match was created with (E1); never changes. */
+  difficulty: Difficulty;
   player: Fighter;
   opponent: Fighter;
   /** Empty whenever `status` is not `in_progress` (§5.5). */
