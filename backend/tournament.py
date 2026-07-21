@@ -393,6 +393,50 @@ def _standings(tournament: models.Tournament) -> list[dict]:
     } for seed in ordered]
 
 
+def _champion(tournament: models.Tournament) -> dict | None:
+    """The E8.1 champion entrant, or ``None`` until the final resolves.
+
+    The champion is the winner of the single highest-round match (the final), so
+    it carries the same seed-disambiguated ``display`` as any other entrant (B11)
+    — two Kaito finalists never collapse to one nameless winner. ``None`` for any
+    status other than ``complete`` (a ``stalled`` bracket has no champion, E7.4),
+    and the derivation is shared by :func:`serialize_bracket` and
+    :func:`serialize_summary` so the two never disagree.
+    """
+    if tournament.status != STATUS_COMPLETE:
+        return None
+    finals = [m for m in tournament.matches if m.round == round_count(tournament)]
+    if not finals:
+        return None
+    final = min(finals, key=lambda m: m.slot)
+    return _entrant(final.winner_id, final.winner_seed)
+
+
+def round_count(tournament: models.Tournament) -> int:
+    """The last round number of ``tournament`` (``log2(size)``), 0 if empty."""
+    return max((m.round for m in tournament.matches), default=0)
+
+
+def serialize_summary(tournament: models.Tournament) -> dict:
+    """Render a tournament as its list-view summary (E8, task 9.2).
+
+    The ``GET /api/tournaments`` row: ``id``, ``name``, ``status``, ``champion``
+    and ``created_at``. ``champion`` reuses :func:`_champion`, so the summary and
+    the full bracket name the same winner with the same seed-disambiguated
+    ``display``. ``created_at`` is ISO-8601 so the client can sort or show it
+    without parsing a database dialect; the list itself is already ordered newest
+    first by the HTTP layer, which is what makes persistence visible across a
+    restart (E8).
+    """
+    return {
+        "id": tournament.id,
+        "name": tournament.name,
+        "status": tournament.status,
+        "champion": _champion(tournament),
+        "created_at": tournament.created_at.isoformat(),
+    }
+
+
 def serialize_bracket(tournament: models.Tournament) -> dict:
     """Render a tournament as the E8.1 bracket object (task 8.3).
 
@@ -424,11 +468,6 @@ def serialize_bracket(tournament: models.Tournament) -> dict:
             })
         rounds.append({"round": round_, "matches": matches})
 
-    champion = None
-    if tournament.status == STATUS_COMPLETE and by_round:
-        final = min(by_round[max(by_round)], key=lambda m: m.slot)
-        champion = _entrant(final.winner_id, final.winner_seed)
-
     return {
         "tournament_id": tournament.id,
         "name": tournament.name,
@@ -436,7 +475,7 @@ def serialize_bracket(tournament: models.Tournament) -> dict:
         "seed": tournament.seed,
         "size": tournament.size,
         "status": tournament.status,
-        "champion": champion,
+        "champion": _champion(tournament),
         "rounds": rounds,
         "standings": _standings(tournament),
     }

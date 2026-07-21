@@ -13,6 +13,7 @@ import random
 import uuid
 
 from flask import Flask, jsonify, request
+from sqlalchemy import select
 
 import db
 import models
@@ -307,6 +308,74 @@ def create_app(database_url: str | None = None) -> Flask:
                     404,
                 )
             body = tournament.serialize_bracket(tour)
+        finally:
+            session.close()
+        return jsonify(body), 200
+
+    @app.post("/api/tournament/<tournament_id>/advance")
+    def advance_tournament_route(tournament_id: str):
+        """Play the next ready match and return the updated bracket (E8, task 9.2).
+
+        Validation → ``tournament.advance`` → ``serialize_bracket`` (B12). The id
+        is checked first so an unknown tournament is a 404 rather than an
+        ``AttributeError`` inside the service. ``advance`` plays exactly one match
+        (E8's "next" = lowest round then lowest slot), so repeated POSTs walk the
+        bracket to a champion one match at a time. A completed tournament raises
+        :class:`tournament.TournamentComplete` → 409 ``tournament_complete``, and a
+        bracket with nothing ``ready`` (a ``pending`` wait or a ``stalled`` slot)
+        raises :class:`tournament.NoReadyMatch` → 409 ``no_ready_match``; on either
+        the transaction is rolled back so the bracket is unchanged afterwards.
+        """
+        session = app.extensions["db_session_factory"]()
+        try:
+            tour = session.get(models.Tournament, tournament_id)
+            if tour is None:
+                return _error(
+                    "tournament_not_found",
+                    f"No tournament with id {tournament_id!r}.",
+                    404,
+                )
+            tour = tournament.advance(session, tournament_id)
+            body = tournament.serialize_bracket(tour)
+            session.commit()
+        except tournament.TournamentComplete:
+            session.rollback()
+            return _error(
+                "tournament_complete",
+                f"Tournament {tournament_id!r} is already complete.",
+                409,
+            )
+        except tournament.NoReadyMatch:
+            session.rollback()
+            return _error(
+                "no_ready_match",
+                f"Tournament {tournament_id!r} has no match ready to play.",
+                409,
+            )
+        finally:
+            session.close()
+        return jsonify(body), 200
+
+    @app.get("/api/tournaments")
+    def list_tournaments_route():
+        """List every tournament, newest first (E8, task 9.2).
+
+        The persistence-visible endpoint: each row is the
+        :func:`tournament.serialize_summary` shape (``id``, ``name``, ``status``,
+        ``champion``, ``created_at``), ordered by ``created_at`` descending so the
+        most recent tournament is first. A second app instance built over the same
+        database file still lists everything here, which is the restart criterion
+        at the HTTP layer (E8). Read-only; the session is opened only to read and
+        always closed.
+        """
+        session = app.extensions["db_session_factory"]()
+        try:
+            tours = session.scalars(
+                select(models.Tournament).order_by(
+                    models.Tournament.created_at.desc()
+                )
+            ).all()
+            body = [tournament.serialize_summary(tour) for tour in tours]
         finally:
             session.close()
         return jsonify(body), 200

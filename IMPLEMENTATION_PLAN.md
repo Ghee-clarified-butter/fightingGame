@@ -393,7 +393,7 @@ installed is the whole stack.
   `unknown_difficulty`, `invalid_seed` each 400 with the §5.4 envelope, and each asserting **no**
   tournament row was created; `tournament_not_found` → 404.
 
-- [ ] **9.2 — `POST /api/tournament/<id>/advance` and `GET /api/tournaments`.**
+- [x] **9.2 — `POST /api/tournament/<id>/advance` and `GET /api/tournaments`.**
   Files: `backend/app.py`.
   Tests: `test_tournament_api.py` — `advance` returns 200 and the updated bracket, and repeated calls
   reach a champion; `tournament_complete` → 409 and the bracket is unchanged afterwards;
