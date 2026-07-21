@@ -11,9 +11,12 @@ were moved here rather than copied (B1). Leaving a second, uncapped chooser
 behind would mean the fuzz suite exercised a path the server never takes.
 
 Nothing here imports anything that imports this module, so there is no cycle:
-``ai`` → ``rules`` → ``fighters``/``moves``, one direction only.
+``ai`` → ``search`` → ``rules`` → ``fighters``/``moves``, one direction only.
+``search`` in particular knows nothing about difficulty dispatch or the streak
+cap, which is why the cap can be applied to its root candidates from here.
 """
 
+from game import search
 from game.moves import ACTION_ORDER, MOVES
 from game.rules import compute_damage, legal_actions, resolve_turn, roll_turn_order
 
@@ -202,12 +205,37 @@ def _choose_heuristic(state: dict, side: str, rng=None) -> str:
     raise AssertionError(f"no candidate for {side}: {candidates}")  # pragma: no cover
 
 
+def _choose_search(state: dict, side: str, rng=None) -> str:
+    """Depth-limited expectimax selection (E3), with the cap applied at the root.
+
+    ``rng`` is accepted and never touched: the search is a pure function of the
+    state and is handed no generator at all (E3.4), so there is nothing here that
+    could advance the live match's draw order.
+
+    E2.1's cap is applied **here**, once, to the root candidate list — the search
+    itself never sees ``passive_streak`` and never enforces the cap inside its
+    tree (E3). So a search may plan a line whose continuation it would not be
+    allowed to play, which the spec accepts as the price of not threading streak
+    state through every node.
+
+    A single candidate needs no tree: the answer is forced, and it is the same
+    move the heuristic would return (E1's "falls back to the heuristic"), so the
+    ~3,200 hypothetical turns are skipped rather than spent proving it.
+    """
+    fighter = state[side]
+    candidates = attacking_candidates(fighter, legal_actions(fighter))
+    if len(candidates) == 1:
+        return candidates[0]
+    return search.choose(state, side, candidates=candidates)
+
+
 #: difficulty -> policy. ``choose_action`` dispatches through this rather than a
 #: chain of ``if``s so adding a policy cannot forget to register it, and so
 #: :data:`DIFFICULTIES` can never drift from what is actually implemented.
 _POLICIES = {
     "random": _choose_random,
     "heuristic": _choose_heuristic,
+    "search": _choose_search,
 }
 
 #: The difficulty values the API accepts (E1), in the spec's order.

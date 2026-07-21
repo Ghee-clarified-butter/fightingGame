@@ -10,8 +10,8 @@ wires the ``search`` policy to it, which keeps E2.1's streak cap in the one plac
 that owns policy.
 """
 
-from game.moves import MOVES
-from game.rules import deterministic_order, resolve_turn
+from game.moves import ACTION_ORDER, MOVES
+from game.rules import STATUS_IN_PROGRESS, deterministic_order, legal_actions, resolve_turn
 
 #: The value of a decided position, from the AI's perspective. Two orders of
 #: magnitude above anything the material terms below can produce (100 is a whole
@@ -128,3 +128,103 @@ def evaluate(state: dict, side: str) -> float:
     ki_term = KI_WEIGHT * (me["ki"] - foe["ki"]) / KI_SCALE
     tempo_term = TEMPO_WEIGHT * (int(me["ascended"]) - int(foe["ascended"]))
     return hp_term + ki_term + tempo_term
+
+
+#: E3.1's default: ``depth`` counts **full turns** (one MAX + one MIN + the
+#: chance node that resolves them), so 2 is two turns of lookahead, not two plies.
+DEFAULT_DEPTH = 2
+
+
+def _rank(action: str) -> int:
+    """Position of ``action`` in the canonical order (E3.4).
+
+    Every tie in the tree is broken by this number and never by a draw, which is
+    what makes a ``search`` match reproducible without consuming any RNG at all.
+    """
+    return ACTION_ORDER.index(action)
+
+
+def _chance_value(
+    state: dict, side: str, my_action: str, foe_action: str, depth: int, *, root: bool
+) -> float:
+    """The CHANCE node: the weighted mean of the children of one action pair.
+
+    ``chance_children`` takes the pair in ``(player, opponent)`` order, so the two
+    actions are put back on their own sides here — ``side`` is whichever side the
+    search is playing for, and the tournament plays AI against AI (E8), so it is
+    not always ``"opponent"``.
+    """
+    if side == "player":
+        player_action, opponent_action = my_action, foe_action
+    else:
+        player_action, opponent_action = foe_action, my_action
+    return sum(
+        weight * _value(child, side, depth - 1)
+        for weight, child in chance_children(state, player_action, opponent_action, root=root)
+    )
+
+
+def _min_value(state: dict, side: str, my_action: str, depth: int, *, root: bool) -> float:
+    """The MIN node: the foe is assumed to answer ``my_action`` as an adversary.
+
+    E3.1 models the opponent as minimizing rather than as random on purpose —
+    averaging over its moves would let the search walk into a line that only
+    survives if the foe misplays.
+
+    The foe always has at least Strike available (0 ki, no precondition), so the
+    minimum is never taken over an empty sequence.
+    """
+    foe = _FOE[side]
+    return min(
+        _chance_value(state, side, my_action, foe_action, depth, root=root)
+        for foe_action in legal_actions(state[foe])
+    )
+
+
+def _value(state: dict, side: str, depth: int) -> float:
+    """The MAX node, and the leaf case that stops the recursion.
+
+    Two things end a line: running out of depth, and the match being over. The
+    second matters as much as the first — expanding a decided position would let
+    a dead fighter keep swinging, and ``evaluate``'s ±:data:`TERMINAL_VALUE`
+    would then be diluted by whatever happened after the KO.
+
+    E2.1's cap is deliberately **not** applied here: it binds the root move only
+    (E3), so a line may plan a continuation the policy would not be allowed to
+    play. Threading streak state through every node to enforce it would cost more
+    than the rule is worth.
+    """
+    if depth <= 0 or state["status"] != STATUS_IN_PROGRESS:
+        return evaluate(state, side)
+    return max(
+        _min_value(state, side, action, depth, root=False)
+        for action in legal_actions(state[side])
+    )
+
+
+def choose(
+    state: dict, side: str, depth: int = DEFAULT_DEPTH, candidates: list[str] | None = None
+) -> str:
+    """Return ``side``'s move under a depth-limited expectimax (E3.1).
+
+    ``candidates`` restricts the **root** ply only, which is where ``game.ai``
+    applies E2.1's streak cap; leave it out and the search picks from everything
+    ``rules.legal_actions`` allows. It is never widened here, so the caller cannot
+    get back a move it excluded.
+
+    Ties go to the earliest action in ``ACTION_ORDER`` (E3.4). That is enforced by
+    scanning in canonical order and replacing the incumbent only on a *strictly*
+    greater value, so the rule holds however the caller ordered ``candidates``.
+
+    Consumes no RNG and takes no generator: every turn below this is resolved
+    with a fixed spread and a coin-flip-free order (E3.4, B6).
+    """
+    offered = candidates if candidates is not None else legal_actions(state[side])
+    actions = sorted(offered, key=_rank)
+    best_action = actions[0]
+    best_value = _min_value(state, side, best_action, depth, root=True)
+    for action in actions[1:]:
+        value = _min_value(state, side, action, depth, root=True)
+        if value > best_value:
+            best_action, best_value = action, value
+    return best_action

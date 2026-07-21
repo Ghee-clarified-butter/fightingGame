@@ -96,13 +96,17 @@ both sides, 3×3 = 9 of the 36 root action pairs are attack-free, so:
 
 ```
 root ply children = 27*3 + 9*1 = 90        (<= 108)
-depth-2 leaves    = 90 * 36    = 3240      (<= 3888)
+depth-2 leaves    = 90 * 36    = 3240      (<= 3888)   -- upper bound, see below
 resolve_turn calls = 90 + 3240 = 3330
 ```
 
-The leaf-count test asserts exactly 90 and 3240 on a full-hp/full-ki position (no line can terminate
-from full hp at depth 2, so no short-circuit perturbs the count) **and** asserts the E3.5 ceilings
-of 108/3888, which is the "three-way at root, one-way deeper" criterion in E10.
+**Corrected while building 3.3:** `90 * 36` assumes six legal moves for both sides at the second
+ply, but Ascend is *spent* at the root — a child in which one side ascended offers that side five
+moves, not six. Summing over the root pairs gives `2412 + 330 + 330 + 25 = 3097` leaves, 143 fewer.
+The root figure of 90 is exact and unaffected. So the leaf-count test asserts exactly **90 and
+3097** on a full-hp/full-ki position (no line can terminate from full hp at depth 2, so no
+short-circuit perturbs the count) **and** asserts the E3.5 ceilings of 108/3888, which is the
+"three-way at root, one-way deeper" criterion in E10. 3240 stands as an upper bound, as does 3888.
 
 **B8 — The budget is 150 ms and the sample size is 200.**
 E3.5/E10 say 150 ms; E11 says 100 ms. E3.5 is the derivation and E10 is the acceptance criterion, so
@@ -241,7 +245,7 @@ installed is the whole stack.
   weights are 1/3 each and sum to 1; the samples are the interval midpoints, not `0.90/1.00/1.10`;
   no RNG is consumed.
 
-- [ ] **3.3 — Depth-limited expectimax with MAX/MIN/CHANCE and canonical tie-breaking.**
+- [x] **3.3 — Depth-limited expectimax with MAX/MIN/CHANCE and canonical tie-breaking.**
   Files: `backend/game/search.py` (`choose(state, side, depth=2)`), `backend/game/ai.py` (wire the
   `search` difficulty, applying the E2.1 cap **at the root only**, and using the heuristic for leaf
   ordering).
@@ -249,7 +253,7 @@ installed is the whole stack.
   actions break to the earliest in `["strike","ki_blast","surge_beam","charge","guard","ascend"]`;
   `rng.getstate()` is unchanged across a selection and the live match RNG is never passed in; the
   root cap forces an attack after two passive turns; the instrumented counts are exactly 90 root
-  children and 3240 leaves on a full-hp/full-ki position, and within E3.5's 108/3888 ceilings (B7).
+  children and 3097 leaves on a full-hp/full-ki position, and within E3.5's 108/3888 ceilings (B7).
 
 - [ ] **3.4 — Time budget.**
   Files: `backend/game/search.py` only if it misses.

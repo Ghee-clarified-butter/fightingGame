@@ -8,12 +8,17 @@ AI plays.
 """
 
 import copy
+import inspect
 import random
 
 import pytest
 
+from game import search
+from game.ai import DIFFICULTIES, choose_action
+from game.moves import ACTION_ORDER, MOVES
 from game.rules import new_match
 from game.search import (
+    DEFAULT_DEPTH,
     HP_WEIGHT,
     KI_SCALE,
     KI_WEIGHT,
@@ -23,6 +28,7 @@ from game.search import (
     TEMPO_WEIGHT,
     TERMINAL_VALUE,
     chance_children,
+    choose,
     evaluate,
     spread_samples,
 )
@@ -287,3 +293,218 @@ def test_the_children_are_resolved_states_a_turn_further_on():
     for _, child in chance_children(state, "strike", "charge", root=True):
         assert child["turn"] == state["turn"] + 1
         assert len(child["log"]) == 2
+
+
+# --- Selection (E3.1) --------------------------------------------------------
+
+
+def _worst_case_position() -> dict:
+    """Both sides at full hp and full ki, so all six moves are legal for both.
+
+    This is E3.5's worst case: nothing is filtered by legality at the root and no
+    line can terminate within two turns (the largest single-turn hit available is
+    Vega's ascended Surge Beam at 43, against a 100 hp bar), so the tree is the
+    full-width one the cost bound is derived from.
+    """
+    return _match_with(player={"ki": 100}, opponent={"ki": 100})
+
+
+def test_a_one_move_from_lethal_position_is_solved_at_depth_one():
+    """Only Surge Beam kills through a Guard, so only Surge Beam is worth +1000.
+
+    Kaito is on 15 hp. Vega's guarded damage is 4 / 8 / 15 for Strike / Ki Blast /
+    Surge Beam at the lowest sample, so a MIN player answers anything cheaper by
+    guarding and survives. Kaito also swings first (spd 14 vs 9) and cannot kill
+    Vega from 130 hp in one turn, so the beam is a clean win rather than a trade.
+    """
+    state = _match_with(player={"hp": 15}, opponent={"ki": 100})
+    assert choose(state, "opponent", depth=1) == "surge_beam"
+
+
+def test_the_search_prefers_the_move_that_wins_over_the_move_that_hits_hardest():
+    """Kaito can finish with a free Strike, so spending 40 ki on a beam is waste."""
+    state = _match_with(player={"ki": 100}, opponent={"hp": 4, "ki": 0})
+    assert choose(state, "player", depth=1) == "strike"
+
+
+def test_equal_valued_actions_break_to_the_earliest_canonical_action(monkeypatch):
+    """E3.4: ties are broken by ``ACTION_ORDER``, never by a draw.
+
+    ``evaluate`` is flattened to a constant so that *every* line is worth exactly
+    the same — the only thing left to decide the move is the tie-break rule.
+    """
+    monkeypatch.setattr(search, "evaluate", lambda state, side: 0.0)
+    state = _worst_case_position()
+    assert choose(state, "opponent") == ACTION_ORDER[0] == "strike"
+
+
+def test_the_tie_break_ignores_the_order_the_candidates_arrive_in(monkeypatch):
+    """Canonical means canonical: a shuffled candidate list picks the same move."""
+    monkeypatch.setattr(search, "evaluate", lambda state, side: 0.0)
+    state = _worst_case_position()
+    assert choose(state, "opponent", candidates=["guard", "ascend", "charge"]) == "charge"
+    assert choose(state, "opponent", candidates=["ascend", "guard", "charge"]) == "charge"
+    assert choose(state, "opponent", candidates=["ascend", "surge_beam"]) == "surge_beam"
+
+
+def test_a_naturally_tied_position_also_breaks_canonically():
+    """Every move wins from a position already won, so all six are worth +1000."""
+    state = _match_with(player={"hp": 0}, opponent={"ki": 100})
+    assert choose(state, "opponent", depth=1) == "strike"
+
+
+def test_candidates_restrict_the_root_and_are_never_widened():
+    """Whatever the search would rather play, it may only answer with what it was
+    offered — which is what makes E2.1's cap enforceable from ``game.ai``."""
+    state = _worst_case_position()
+    for offered in (["charge"], ["guard", "ascend"], ["ki_blast", "charge"]):
+        assert choose(state, "opponent", candidates=offered) in offered
+
+
+def test_the_default_depth_is_two_full_turns():
+    assert DEFAULT_DEPTH == 2
+    state = _worst_case_position()
+    assert choose(state, "opponent") == choose(state, "opponent", depth=DEFAULT_DEPTH)
+
+
+@pytest.mark.parametrize("side", SIDES)
+def test_a_selection_is_deterministic_and_mutates_nothing(side):
+    state = _worst_case_position()
+    snapshot = copy.deepcopy(state)
+    first = choose(state, side)
+    assert choose(state, side) == first
+    assert state == snapshot
+
+
+# --- Purity of the selection (E3.4) ------------------------------------------
+
+
+def test_the_search_takes_no_generator_at_all():
+    """Structural, not a promise: there is no parameter to hand the match RNG to."""
+    parameters = inspect.signature(choose).parameters
+    assert "rng" not in parameters
+    assert list(parameters) == ["state", "side", "depth", "candidates"]
+
+
+def test_selecting_at_the_search_difficulty_consumes_no_rng():
+    """E3.4: draw #2 happens only for ``random``, so the probe must not advance."""
+    state = _worst_case_position()
+    probe = random.Random(4242)
+    before = probe.getstate()
+    assert choose_action(state, "opponent", "search", probe) == choose(state, "opponent")
+    assert probe.getstate() == before
+
+
+# --- The cap is applied at the root, by game.ai (E2.1, E3) -------------------
+
+
+def _guard_preferring_position(streak: int = 0) -> dict:
+    """A position the search answers with Guard when it is free to choose.
+
+    Kaito is at full hp with a full ki pool, so a Surge Beam is coming; Vega is at
+    30 of 130 and survives it behind a Guard. Exactly the shape E2.1 calls out —
+    "guard when about to die" is the condition that can recur forever.
+    """
+    return _match_with(
+        player={"hp": 100, "ki": 100},
+        opponent={"hp": 30, "ki": 100, "passive_streak": streak},
+    )
+
+
+def test_the_search_alone_would_guard_here():
+    assert choose(_guard_preferring_position(), "opponent") == "guard"
+
+
+def test_the_root_cap_forces_an_attack_after_two_passive_turns():
+    """E2.1 outranks the search exactly as it outranks the heuristic's rule 2."""
+    action = choose_action(_guard_preferring_position(streak=2), "opponent", "search")
+    assert MOVES[action]["is_attack"]
+    assert choose_action(_guard_preferring_position(streak=0), "opponent", "search") == "guard"
+
+
+def test_two_consecutive_passive_turns_are_still_allowed():
+    assert choose_action(_guard_preferring_position(streak=1), "opponent", "search") == "guard"
+
+
+def test_the_search_itself_never_reads_the_streak():
+    """The cap lives in ``game.ai``; E3 enforces it at the root only, so the tree
+    must be blind to ``passive_streak`` — otherwise a line would be pruned inside
+    the search for a rule that binds one single move."""
+    for streak in (0, 2, 5):
+        assert choose(_guard_preferring_position(streak), "opponent") == "guard"
+
+
+def test_search_is_a_registered_difficulty_in_the_specs_order():
+    assert DIFFICULTIES == ("random", "heuristic", "search")
+
+
+# --- The cost bound (E3.5, B7) -----------------------------------------------
+
+
+def _count_children(state: dict, side: str, monkeypatch) -> dict[bool, int]:
+    """Run one selection with ``chance_children`` instrumented per ply."""
+    counts = {True: 0, False: 0}
+    original = search.chance_children
+
+    def counting(state, player_action, opponent_action, *, root):
+        children = original(state, player_action, opponent_action, root=root)
+        counts[root] += len(children)
+        return children
+
+    monkeypatch.setattr(search, "chance_children", counting)
+    choose(state, side)
+    # Restored so a second call in the same test wraps the real function rather
+    # than the first counter, which would credit its children to both tallies.
+    monkeypatch.setattr(search, "chance_children", original)
+    return counts
+
+
+#: The exact tree of a full-hp/full-ki depth-2 selection.
+#:
+#: Root: 36 action pairs; 27 contain an attack and branch three ways on the
+#: spread, 9 are attack-free and yield one child (E3.2) — 27*3 + 9 = **90**.
+#:
+#: Second ply: 36 pairs per child, mean sample only, **except** that Ascend is
+#: spent at the root. A child in which one side ascended offers that side 5 moves,
+#: not 6. Summing over the root pairs: 2412 leaves from the 25 ascend-free pairs,
+#: 330 + 330 from the two single-ascend groups, 25 from the double-ascend pair —
+#: **3097**. B7's 90 * 36 = 3240 ignores the spent Ascend and over-counts by 143;
+#: it stands as an upper bound, as does E3.5's own 3,888.
+ROOT_CHILDREN = 90
+LEAVES = 3097
+E3_5_ROOT_CEILING = 108
+E3_5_LEAF_CEILING = 3888
+
+
+def test_the_worst_case_tree_is_exactly_ninety_root_children_and_3097_leaves(monkeypatch):
+    counts = _count_children(_worst_case_position(), "opponent", monkeypatch)
+    assert counts[True] == ROOT_CHILDREN
+    assert counts[False] == LEAVES
+
+
+def test_the_tree_stays_inside_the_cost_bound(monkeypatch):
+    """E3.5's table is an upper bound: three-way at the root, one-way deeper."""
+    counts = _count_children(_worst_case_position(), "player", monkeypatch)
+    assert counts[True] <= E3_5_ROOT_CEILING
+    assert counts[False] <= E3_5_LEAF_CEILING
+    # Had every ply branched three ways the leaf count would be 3x this and the
+    # 150 ms budget would be unmeetable, which is why E3.2 restricts it.
+    assert counts[False] * 3 > E3_5_LEAF_CEILING
+
+
+def test_legal_move_filtering_shrinks_the_tree(monkeypatch):
+    """E3.5: "legal-move filtering usually cuts 6 to 4-5". An empty pool leaves
+    Strike, Charge and Guard, so the tree collapses by well over half."""
+    poor = _match_with(player={"ki": 0}, opponent={"ki": 0})
+    counts = _count_children(poor, "opponent", monkeypatch)
+    assert counts[True] < ROOT_CHILDREN
+    assert counts[False] < LEAVES
+
+
+def test_a_decided_line_is_not_expanded_any_further(monkeypatch):
+    """A KO ends the line: expanding past it would let a dead fighter swing back
+    and dilute the ±1000 the whole evaluation rests on."""
+    lethal = _match_with(player={"hp": 1, "ki": 0}, opponent={"ki": 100})
+    counts = _count_children(lethal, "opponent", monkeypatch)
+    full = _count_children(_worst_case_position(), "opponent", monkeypatch)
+    assert counts[False] < full[False]
