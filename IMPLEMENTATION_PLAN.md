@@ -313,7 +313,7 @@ Not used: `flask-cors` (see A9), `requests`, any state/fetch library.
 
 ### Phase 3 — Frontend (`frontend/src/`), thin renderer only
 
-- [ ] **3.1 Types and the API module.**
+- [x] **3.1 Types and the API module.**
       Files: `frontend/src/types.ts`, `frontend/src/api.ts`, `frontend/src/api.test.ts`.
       `MatchState`, `Fighter`, `LogEntry`, `ApiError` mirroring §5.5. A single typed module owning
       **all** `fetch` calls (§6) against relative `/api/...` paths — no base URL, no hostnames.
