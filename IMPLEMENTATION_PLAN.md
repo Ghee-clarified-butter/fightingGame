@@ -281,7 +281,7 @@ Not used: `flask-cors` (see A9), `requests`, any state/fetch library.
       with `rules.legal_actions` at every turn of a played-out match; it is `[]` once the match ends
       (§8).
 
-- [ ] **2.4 `POST /api/match/<id>/turn` happy path.**
+- [x] **2.4 `POST /api/match/<id>/turn` happy path.**
       Files: `backend/app.py`, `backend/tests/test_api.py`.
       Validate the player's action, then call `play_turn` (which draws the opponent's move *after*
       validation, §4.7). Returns 200 with `log` extended.

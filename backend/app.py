@@ -106,6 +106,24 @@ def create_app() -> Flask:
             return _error("match_not_found", f"No match with id {match_id!r}.", 404)
         return jsonify(serialize(match_id, match["state"])), 200
 
+    @app.post("/api/match/<match_id>/turn")
+    def submit_turn(match_id: str):
+        match = matches.get(match_id)
+        if match is None:
+            return _error("match_not_found", f"No match with id {match_id!r}.", 404)
+
+        payload = request.get_json(silent=True) or {}
+        action = payload.get("action")
+
+        # ``play_turn`` draws the opponent's move itself, and only after this
+        # point — so a turn rejected above never advances the match RNG (§4.7).
+        state, _ = rules.play_turn(match["state"], action, match["rng"])
+        # The state is replaced rather than mutated in place: ``resolve_turn``
+        # works on a copy (§6), so the store only adopts the new one once the
+        # whole turn resolved without raising.
+        match["state"] = state
+        return jsonify(serialize(match_id, state)), 200
+
     return app
 
 

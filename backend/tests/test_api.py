@@ -215,17 +215,12 @@ def test_a_seeded_match_stores_a_reproducible_rng(client):
 
 
 def advance(app, match_id, player_action):
-    """Play one turn straight through the rules, bypassing the HTTP layer.
-
-    `POST .../turn` does not exist yet (plan 2.4), but serialization has to be
-    provable against a match that is mid-fight and against one that is over, so
-    these tests drive the stored match the same way the route will.
-    """
-    match = app.extensions["matches"][match_id]
-    state, _ = rules.play_turn(match["state"], player_action, match["rng"])
-    state["status"] = rules.check_status(state)
-    match["state"] = state
-    return state
+    """Play one turn through the API and return the resulting payload."""
+    response = app.test_client().post(
+        f"/api/match/{match_id}/turn", json={"action": player_action}
+    )
+    assert response.status_code == 200, response.get_json()
+    return response.get_json()
 
 
 def test_the_payload_has_exactly_the_spec_keys(client):
@@ -348,3 +343,97 @@ def test_serialize_hands_back_copies_not_the_stored_dicts():
 
     assert stored["player"]["hp"] == hp_before
     assert stored["log"][0]["damage"] == damage_before
+
+
+# --- Submitting a turn (§5.2) -----------------------------------------------
+
+
+def seeded(client, seed, player="kaito", opponent="vega"):
+    """Create a seeded match and return its id."""
+    return create(client, player, opponent, seed=seed).get_json()["match_id"]
+
+
+def test_a_strike_hurts_the_opponent_and_writes_the_log(client):
+    match_id = seeded(client, 12345)
+    before = client.get(f"/api/match/{match_id}").get_json()
+
+    response = client.post(f"/api/match/{match_id}/turn", json={"action": "strike"})
+
+    assert response.status_code == 200
+    state = response.get_json()
+    assert state["opponent"]["hp"] <= before["opponent"]["hp"] - 1
+    assert len(state["log"]) >= 1
+    assert set(state) == STATE_KEYS
+
+
+def test_the_turn_counter_advances_by_one_per_request(client):
+    match_id = seeded(client, 7)
+
+    for expected in (1, 2, 3):
+        state = client.post(
+            f"/api/match/{match_id}/turn", json={"action": "guard"}
+        ).get_json()
+        assert state["turn"] == expected
+
+
+def test_the_log_is_cumulative_and_oldest_first(client):
+    match_id = seeded(client, 21)
+
+    previous: list[dict] = []
+    for expected_turn in (1, 2, 3):
+        state = client.post(
+            f"/api/match/{match_id}/turn", json={"action": "charge"}
+        ).get_json()
+        log = state["log"]
+        # Append-only: every earlier entry survives, unchanged, in its old slot.
+        assert log[: len(previous)] == previous
+        assert len(log) > len(previous)
+        assert [entry["turn"] for entry in log] == sorted(entry["turn"] for entry in log)
+        assert all(entry["turn"] == expected_turn for entry in log[len(previous):])
+        previous = log
+
+
+def test_the_stored_match_matches_what_the_turn_returned(client):
+    match_id = seeded(client, 99)
+
+    returned = client.post(f"/api/match/{match_id}/turn", json={"action": "ki_blast"})
+    fetched = client.get(f"/api/match/{match_id}")
+
+    assert fetched.get_data() == returned.get_data()
+
+
+def test_ki_blast_costs_exactly_fifteen_ki(client):
+    match_id = seeded(client, 31)
+
+    state = client.post(
+        f"/api/match/{match_id}/turn", json={"action": "ki_blast"}
+    ).get_json()
+
+    assert state["player"]["ki"] == 30 - 15
+
+
+def test_a_turn_on_an_unknown_match_is_a_404(client):
+    response = client.post(f"/api/match/{uuid.uuid4().hex}/turn", json={"action": "strike"})
+
+    assert response.status_code == 404
+    assert response.get_json()["error"]["code"] == "match_not_found"
+
+
+def test_the_route_resolves_the_turn_the_rules_would(client):
+    """The route adds no rule of its own: same seed, same actions, same result."""
+    app = create_app()
+    api = app.test_client()
+    match_id = api.post(
+        "/api/match",
+        json={"player_fighter": "kaito", "opponent_fighter": "vega", "seed": 808},
+    ).get_json()["match_id"]
+
+    expected = rules.new_match("kaito", "vega")
+    rng = random.Random(808)
+    for action in ("strike", "charge", "ki_blast", "guard"):
+        expected, _ = rules.play_turn(expected, action, rng)
+        state = api.post(f"/api/match/{match_id}/turn", json={"action": action}).get_json()
+        assert state["player"] == expected["player"]
+        assert state["opponent"] == expected["opponent"]
+        assert state["log"] == expected["log"]
+        assert state["status"] == expected["status"]
