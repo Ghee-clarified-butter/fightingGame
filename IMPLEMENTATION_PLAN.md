@@ -411,7 +411,7 @@ installed is the whole stack.
   Tests: `frontend/src/api.test.ts` — each new call hits the right relative `/api/...` path with the
   right method and body, parses the payload, and throws `ApiError` carrying the server's code.
 
-- [ ] **10.2 — Difficulty selector (E5).**
+- [x] **10.2 — Difficulty selector (E5).**
   Files: new `frontend/src/components/DifficultySelect.tsx`, `frontend/src/MatchScreen.tsx`.
   Tests: new `DifficultySelect.test.tsx` and `MatchScreen.test.tsx` — the selector defaults to
   `random`, offers all three values, is **disabled** once a match is in progress, the current

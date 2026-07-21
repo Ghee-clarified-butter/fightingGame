@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import MatchScreen from "./MatchScreen";
 import { ApiError, type Action, type MatchState } from "./types";
@@ -75,7 +75,8 @@ describe("MatchScreen", () => {
     expect(await screen.findByRole("heading", { name: "Kaito" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Vega" })).toBeInTheDocument();
     expect(createMatch).toHaveBeenCalledTimes(1);
-    expect(createMatch).toHaveBeenCalledWith("kaito", "vega");
+    // Difficulty defaults to random (E1); seed is left for the server to draw.
+    expect(createMatch).toHaveBeenCalledWith("kaito", "vega", undefined, "random");
   });
 
   it("submits the clicked move and re-renders from the response", async () => {
@@ -213,5 +214,49 @@ describe("MatchScreen", () => {
     });
     await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
     expect(submitTurn).toHaveBeenCalledTimes(2);
+  });
+
+  it("offers a difficulty selector defaulting to random with all three policies", async () => {
+    createMatch.mockResolvedValue(state());
+
+    render(<MatchScreen />);
+    await screen.findByRole("button", { name: /strike/i });
+
+    const selector = screen.getByTestId("difficulty-select") as HTMLSelectElement;
+    expect(selector.value).toBe("random");
+    const options = screen.getAllByRole("option") as HTMLOptionElement[];
+    expect(options.map((option) => option.value)).toEqual(["random", "heuristic", "search"]);
+  });
+
+  it("disables the selector and shows the difficulty while a match is in progress", async () => {
+    createMatch.mockResolvedValue(state({ difficulty: "search" }));
+
+    render(<MatchScreen />);
+    await screen.findByRole("button", { name: /strike/i });
+
+    expect(screen.getByTestId("difficulty-select")).toBeDisabled();
+    expect(screen.getByTestId("current-difficulty")).toHaveTextContent("Search");
+  });
+
+  it("sends the chosen difficulty when a new match is started", async () => {
+    // First match ends immediately, which re-enables the selector; the second
+    // creation must carry whatever the user then picked.
+    createMatch
+      .mockResolvedValueOnce(state({ status: "player_won", legal_actions: [] }))
+      .mockResolvedValueOnce(state({ match_id: "m2", difficulty: "search" }));
+
+    render(<MatchScreen />);
+    await screen.findByTestId("result-screen");
+
+    const selector = screen.getByTestId("difficulty-select") as HTMLSelectElement;
+    expect(selector).toBeEnabled();
+    fireEvent.change(selector, { target: { value: "search" } });
+
+    await act(async () => {
+      screen.getByRole("button", { name: /new match/i }).click();
+    });
+
+    expect(createMatch).toHaveBeenCalledTimes(2);
+    expect(createMatch).toHaveBeenLastCalledWith("kaito", "vega", undefined, "search");
   });
 });

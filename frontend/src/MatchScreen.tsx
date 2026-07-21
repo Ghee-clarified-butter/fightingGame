@@ -11,11 +11,12 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createMatch, submitTurn } from "./api";
-import { ApiError, type Action, type MatchState } from "./types";
+import { ApiError, type Action, type Difficulty, type MatchState } from "./types";
 import StatBars from "./components/StatBars";
 import MoveButtons from "./components/MoveButtons";
 import BattleLog from "./components/BattleLog";
 import ResultScreen from "./components/ResultScreen";
+import DifficultySelect, { LABELS as DIFFICULTY_LABELS } from "./components/DifficultySelect";
 
 /** The §2.1 starters, in the fixed matchup of step 1. */
 const PLAYER_FIGHTER = "kaito";
@@ -30,11 +31,21 @@ export default function MatchScreen() {
   const [match, setMatch] = useState<MatchState | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The difficulty for the *next* match. It is fixed at creation (E1), so the
+  // selector is disabled while a match is live and this only changes between
+  // matches.
+  const [difficulty, setDifficulty] = useState<Difficulty>("random");
 
   // `busy` state alone cannot gate a second click in the same tick: React
   // batches the update, so both handlers would still read `busy === false`.
   // A ref flips synchronously, which is what "only one turn in flight" needs.
   const inFlight = useRef(false);
+
+  // `startMatch` is created once (empty deps) so mounting fires it exactly one
+  // time; it must therefore read the *current* difficulty rather than closing
+  // over a stale one, hence a ref that tracks the state.
+  const difficultyRef = useRef(difficulty);
+  difficultyRef.current = difficulty;
 
   const startMatch = useCallback(async () => {
     if (inFlight.current) return;
@@ -42,7 +53,9 @@ export default function MatchScreen() {
     setBusy(true);
     setError(null);
     try {
-      setMatch(await createMatch(PLAYER_FIGHTER, OPPONENT_FIGHTER));
+      setMatch(
+        await createMatch(PLAYER_FIGHTER, OPPONENT_FIGHTER, undefined, difficultyRef.current),
+      );
     } catch (caught) {
       setError(messageFor(caught));
     } finally {
@@ -78,9 +91,20 @@ export default function MatchScreen() {
     [match],
   );
 
+  // Difficulty is chosen at creation (E1), so the selector locks the moment a
+  // match is live and reopens once it resolves. While `match` is still loading
+  // (`null`) the request is already in flight, so `busy` keeps it locked too.
+  const matchInProgress = match !== null && match.status === "in_progress";
+  const selectorDisabled = busy || matchInProgress;
+
   if (match === null) {
     return (
       <div className="flex flex-col gap-2">
+        <DifficultySelect
+          value={difficulty}
+          disabled={selectorDisabled}
+          onChange={setDifficulty}
+        />
         <p data-testid="loading">Starting match…</p>
         {error !== null && (
           <p data-testid="error" role="alert" className="text-rose-400">
@@ -93,6 +117,20 @@ export default function MatchScreen() {
 
   return (
     <div className="flex flex-col gap-6">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <DifficultySelect
+          value={matchInProgress ? match.difficulty : difficulty}
+          disabled={selectorDisabled}
+          onChange={setDifficulty}
+        />
+        {matchInProgress && (
+          <p data-testid="current-difficulty" className="text-sm text-slate-400">
+            Fighting the <span className="font-semibold">{DIFFICULTY_LABELS[match.difficulty]}</span>{" "}
+            AI
+          </p>
+        )}
+      </div>
+
       <div className="grid gap-6 sm:grid-cols-2">
         <StatBars fighter={match.player} />
         <StatBars fighter={match.opponent} />
