@@ -346,7 +346,7 @@ installed is the whole stack.
 
 ### 8. Tournament service
 
-- [ ] **8.1 — Creation.**
+- [x] **8.1 — Creation.**
   Files: new `backend/tournament.py` — `create_tournament(session, name, roster, difficulty, seed)`
   building the **entire** bracket (later rounds `pending`), pre-resolving byes with `status="bye"`
   and a `winner_seed`, raising `InvalidRosterError` / `UnknownFighterError` /
