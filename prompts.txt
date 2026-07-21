@@ -204,7 +204,20 @@ byes and odd rosters? Are persistence guarantees actually testable? Fix each iss
 specs/extension.md. Do not implement.
 
 # STEP 2 / STAGE 3 — PLAN (loop)
-(pending)
+
+dry run
+(approval to run the Step 2 plan loop as a dry run; the loop was invoked as:)
+
+./loop.sh -m plan -n 3 -p PROMPT_plan_nocommit.md
+
+Ran for 1 iteration and stopped on <promise>DONE</promise>.
+Same no-commit prompt variant used for Step 1 / Stage 3 (logged above), so the
+plan could be read by a human before it landed. Push was neutralized for the
+run via a bogus remote.origin.pushurl, restored afterwards.
+
+Reviewed by hand, then two corrections were made before committing:
+  - draw handling in a bracket slot (new E7.4: replay, never award)
+  - E11's 100ms/100-seed figures aligned to E3.5/E10's 150ms/200 seeds
 
 # STEP 2 / STAGE 4 — BUILD (loop)
 (pending)
