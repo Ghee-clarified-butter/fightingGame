@@ -322,7 +322,7 @@ Not used: `flask-cors` (see A9), `requests`, any state/fetch library.
       Tests: with `fetch` stubbed, each function hits the right relative path and method; a 400 body
       is surfaced as an error carrying `code` and `message`; no absolute URL appears in the module.
 
-- [ ] **3.2 HP and ki bars.**
+- [x] **3.2 HP and ki bars.**
       Files: `frontend/src/components/StatBars.tsx`, `frontend/src/components/StatBars.test.tsx`.
       Per fighter: an hp bar and a ki bar, each showing current/max **numerically as well as by
       width** (§7).
