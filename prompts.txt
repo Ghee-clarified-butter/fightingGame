@@ -167,8 +167,30 @@ and so could not honestly claim the suite was green.
 # STEP 2 — EXTENSION (AI opponent + persistent tournament)
 ================================================================================
 
-# STEP 2 / STAGE 1 — SPECIFY (manual)
-(pending)
+# STEP 2 / STAGE 1 — SPECIFY (manual, interactive Claude Code session)
+
+oh, mb - yeah, start from 1
+(approval to run Step 2 Stage 1; the stage prompt executed was:)
+
+Read AGENTS.md and specs/base.md. Write specs/extension.md covering TWO additions:
+
+(A) AI opponent that replaces the random move-picker:
+   - A heuristic policy first: charge when ki is low; use Surge Beam when it can KO or when ki is
+     high; Ki Blast as the default poke; Guard when a big incoming hit is likely; Ascend at a
+     defined ki/HP threshold.
+   - Then a shallow expectimax search (depth ~2-3) over the resolution function, averaging over the
+     random damage spread, with a stated position-evaluation function (hp/ki differential, tempo).
+   - A difficulty setting that selects heuristic vs. search.
+
+(B) Persistent single-elimination tournament:
+   - SQLAlchemy models for Fighter, Tournament, Match (with bracket position + result).
+   - Endpoints: create a tournament from a roster, play/advance the next match (AI vs AI or
+     player vs AI), fetch bracket + standings. Results persist across server restarts (SQLite).
+   - A bracket view in the UI showing rounds, winners, and the champion.
+
+Include acceptance criteria and a test plan for both (unit tests for the AI policy on crafted
+board states; DB tests for bracket creation, advancement, and persistence).
+Do not implement yet.
 
 # STEP 2 / STAGE 2 — REVIEW (manual)
 (pending)
