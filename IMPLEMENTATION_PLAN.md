@@ -386,7 +386,7 @@ installed is the whole stack.
 
 ### 9. Tournament endpoints
 
-- [ ] **9.1 — `POST /api/tournament` and `GET /api/tournament/<id>`.**
+- [x] **9.1 — `POST /api/tournament` and `GET /api/tournament/<id>`.**
   Files: `backend/app.py` (validation → `tournament.py` → serialize; a request-scoped session).
   Tests: new `backend/tests/test_tournament_api.py` — 201 with the E8.1 bracket; `GET` returns the
   same object and is read-only; `invalid_roster` (sizes 0, 1, 17), `unknown_fighter`,

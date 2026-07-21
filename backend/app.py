@@ -15,7 +15,10 @@ import uuid
 from flask import Flask, jsonify, request
 
 import db
+import models
+import tournament
 from game import ai, rules
+from game.bracket import InvalidRosterError
 from game.fighters import UnknownFighterError
 from game.moves import MOVES
 
@@ -214,6 +217,99 @@ def create_app(database_url: str | None = None) -> Flask:
         # whole turn resolved without raising.
         match["state"] = state
         return jsonify(serialize(match_id, state)), 200
+
+    @app.post("/api/tournament")
+    def create_tournament_route():
+        """Create a tournament and its whole bracket (E8, task 9.1).
+
+        Validation → ``tournament.create_tournament`` → ``serialize_bracket``
+        (B12). Shape checks the service does not own live here: ``roster`` must be
+        a list and ``difficulty`` is defaulted/validated by :func:`_parse_difficulty`
+        exactly as a single match's is. Everything the service validates —
+        ``invalid_seed``, ``unknown_fighter``, and the roster *size* half of
+        ``invalid_roster`` — is caught below and mapped to its §5.4 code. The
+        service raises **before** adding any row (see ``tournament._validate``), so
+        a rejected request leaves the database untouched; the ``rollback`` is belt
+        and braces for the fighter-registry rows ``create_tournament`` flushes
+        first.
+        """
+        payload = request.get_json(silent=True) or {}
+
+        name = payload.get("name", "")
+        if not isinstance(name, str):
+            return _error(
+                "invalid_name", f"name must be a string; got {name!r}.", 400
+            )
+
+        roster = payload.get("roster")
+        if not isinstance(roster, list):
+            return _error(
+                "invalid_roster",
+                f"roster must be a list of fighter ids; got {roster!r}.",
+                400,
+            )
+
+        difficulty, error = _parse_difficulty(payload)
+        if error is not None:
+            return error
+
+        session = app.extensions["db_session_factory"]()
+        try:
+            tour = tournament.create_tournament(
+                session, name, roster, difficulty, payload.get("seed")
+            )
+            body = tournament.serialize_bracket(tour)
+            session.commit()
+        except tournament.InvalidSeedError as exc:
+            session.rollback()
+            return _error(
+                "invalid_seed", f"seed must be an integer; got {exc.args[0]!r}.", 400
+            )
+        except InvalidRosterError as exc:
+            session.rollback()
+            return _error(
+                "invalid_roster",
+                f"a roster of {exc.args[0]} is not a legal size (2..16).",
+                400,
+            )
+        except UnknownFighterError as exc:
+            session.rollback()
+            return _error(
+                "unknown_fighter", f"Unknown fighter id: {exc.args[0]!r}.", 400
+            )
+        except ai.UnknownDifficultyError as exc:
+            session.rollback()
+            return _error(
+                "unknown_difficulty",
+                f"difficulty must be one of {list(ai.DIFFICULTIES)}; "
+                f"got {exc.args[0]!r}.",
+                400,
+            )
+        finally:
+            session.close()
+        return jsonify(body), 201
+
+    @app.get("/api/tournament/<tournament_id>")
+    def get_tournament_route(tournament_id: str):
+        """Return a tournament's bracket, read-only (E8, task 9.1).
+
+        An unknown id is a 404, never a tournament created on demand — the same
+        stance the single-match GET takes (§5.3). The session is opened only to
+        read and is always closed.
+        """
+        session = app.extensions["db_session_factory"]()
+        try:
+            tour = session.get(models.Tournament, tournament_id)
+            if tour is None:
+                return _error(
+                    "tournament_not_found",
+                    f"No tournament with id {tournament_id!r}.",
+                    404,
+                )
+            body = tournament.serialize_bracket(tour)
+        finally:
+            session.close()
+        return jsonify(body), 200
 
     return app
 
