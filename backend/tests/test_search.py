@@ -7,6 +7,7 @@ first run, so a re-tuned weight fails here instead of silently changing how the
 AI plays.
 """
 
+import copy
 import random
 
 import pytest
@@ -16,9 +17,14 @@ from game.search import (
     HP_WEIGHT,
     KI_SCALE,
     KI_WEIGHT,
+    MEAN_SPREAD,
+    SPREAD_SAMPLES,
+    SPREAD_WEIGHT,
     TEMPO_WEIGHT,
     TERMINAL_VALUE,
+    chance_children,
     evaluate,
+    spread_samples,
 )
 
 SIDES = ("player", "opponent")
@@ -185,3 +191,99 @@ def test_evaluating_consumes_no_rng_and_mutates_nothing():
     assert rng.getstate() == before_rng
     assert state["player"] == snapshot["player"]
     assert state["opponent"] == snapshot["opponent"]
+
+
+# --- The chance node (E3.2) --------------------------------------------------
+
+
+def test_the_samples_are_the_interval_midpoints_not_the_endpoints():
+    """The whole point of E3.2: 0.90/1.00/1.10 would put a third of the mass on
+    each end of a *uniform* distribution and bias the search toward defence."""
+    assert SPREAD_SAMPLES == (0.9333, 1.0, 1.0667)
+    assert SPREAD_SAMPLES != (0.90, 1.00, 1.10)
+    # Midpoints of the three equal-probability thirds of [0.90, 1.10] (§4.1).
+    step = (1.10 - 0.90) / 3
+    expected = tuple(round(0.90 + step * (i + 0.5), 4) for i in range(3))
+    assert SPREAD_SAMPLES == expected
+    assert MEAN_SPREAD == 1.0
+
+
+def test_the_weights_are_a_third_each_and_sum_to_one():
+    assert SPREAD_WEIGHT == pytest.approx(1 / 3)
+    state = _match_with()
+    children = chance_children(state, "strike", "strike", root=True)
+    weights = [weight for weight, _ in children]
+    assert weights == [pytest.approx(1 / 3)] * 3
+    assert sum(weights) == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize(
+    "player_action,opponent_action",
+    [
+        ("strike", "strike"),
+        ("strike", "guard"),
+        ("charge", "ki_blast"),
+        ("ascend", "surge_beam"),
+    ],
+)
+def test_an_attacking_pair_branches_three_ways_at_the_root(player_action, opponent_action):
+    state = _match_with(player={"ki": 100}, opponent={"ki": 100})
+    assert spread_samples(player_action, opponent_action, root=True) == SPREAD_SAMPLES
+    assert len(chance_children(state, player_action, opponent_action, root=True)) == 3
+
+
+@pytest.mark.parametrize(
+    "player_action,opponent_action",
+    [
+        ("charge", "guard"),
+        ("guard", "guard"),
+        ("ascend", "charge"),
+    ],
+)
+def test_a_turn_with_no_attack_in_it_has_exactly_one_child(player_action, opponent_action):
+    """No spread is drawn, so three children would be three identical states."""
+    state = _match_with(player={"ki": 100}, opponent={"ki": 100})
+    assert spread_samples(player_action, opponent_action, root=True) == (MEAN_SPREAD,)
+    children = chance_children(state, player_action, opponent_action, root=True)
+    assert len(children) == 1
+    assert children[0][0] == pytest.approx(1.0)
+
+
+def test_below_the_root_ply_only_the_mean_sample_is_taken():
+    """E3.2 restricts three-way branching to the root; deeper plies cost 1×."""
+    state = _match_with(player={"ki": 100}, opponent={"ki": 100})
+    assert spread_samples("surge_beam", "strike", root=False) == (MEAN_SPREAD,)
+    children = chance_children(state, "surge_beam", "strike", root=False)
+    assert len(children) == 1
+    assert children[0][0] == pytest.approx(1.0)
+    # And it is the *mean* child, identical to the middle root branch.
+    root_children = chance_children(state, "surge_beam", "strike", root=True)
+    assert children[0][1] == root_children[1][1]
+
+
+def test_the_three_children_differ_only_by_the_spread():
+    """Low, mean and high rolls must actually produce different damage, or the
+    chance node would be averaging three copies of one number."""
+    state = _match_with(player={"ki": 100}, opponent={"ki": 100})
+    children = chance_children(state, "surge_beam", "surge_beam", root=True)
+    hps = [child["opponent"]["hp"] for _, child in children]
+    assert hps[0] > hps[1] > hps[2]
+
+
+def test_expanding_consumes_no_rng_and_mutates_nothing():
+    """E3.4: no generator is even passed in, so there is none to advance."""
+    rng = random.Random(999)
+    before_rng = rng.getstate()
+    state = _match_with(player={"ki": 100}, opponent={"ki": 100})
+    snapshot = copy.deepcopy(state)
+    for root in (True, False):
+        chance_children(state, "surge_beam", "ki_blast", root=root)
+    assert rng.getstate() == before_rng
+    assert state == snapshot
+
+
+def test_the_children_are_resolved_states_a_turn_further_on():
+    state = _match_with(player={"ki": 100}, opponent={"ki": 100})
+    for _, child in chance_children(state, "strike", "charge", root=True):
+        assert child["turn"] == state["turn"] + 1
+        assert len(child["log"]) == 2

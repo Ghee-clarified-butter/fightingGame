@@ -233,7 +233,7 @@ installed is the whole stack.
   `hp_term` uses fractions so Kaito at 50/100 and Vega at 65/130 evaluate equal on hp; the ki and
   tempo weights match the spec's constants.
 
-- [ ] **3.2 — Chance node.**
+- [x] **3.2 — Chance node.**
   Files: `backend/game/search.py` (`SPREAD_SAMPLES = (0.9333, 1.0, 1.0667)`, a chance expansion that
   yields three equally weighted children when either side attacks and exactly one when neither does,
   and takes the mean-only sample below the root ply).

@@ -10,6 +10,9 @@ wires the ``search`` policy to it, which keeps E2.1's streak cap in the one plac
 that owns policy.
 """
 
+from game.moves import MOVES
+from game.rules import deterministic_order, resolve_turn
+
 #: The value of a decided position, from the AI's perspective. Two orders of
 #: magnitude above anything the material terms below can produce (100 is a whole
 #: health bar), so the search always prefers a win to any accumulation of
@@ -30,6 +33,70 @@ KI_SCALE = 100.0
 
 #: The side each side faces.
 _FOE = {"player": "opponent", "opponent": "player"}
+
+#: E3.2's chance node. The spread is uniform on [0.90, 1.10] (§4.1) and cannot be
+#: enumerated, so it is sampled at the *midpoints of three equal-probability
+#: intervals* — 0.90 + 0.2/6, the mean, and 1.10 - 0.2/6. Sampling the endpoints
+#: 0.90/1.00/1.10 instead would put a third of the mass on each end of a flat
+#: distribution, inflating the variance the search believes it faces and biasing
+#: it toward defensive play. The endpoints still belong in E2 rules 1 and 2,
+#: where the worst and best case is the actual question.
+SPREAD_SAMPLES = (0.9333, 1.0, 1.0667)
+
+#: Equal weights, one per sample (E3.2).
+SPREAD_WEIGHT = 1.0 / len(SPREAD_SAMPLES)
+
+#: The single sample used below the root ply, and for turns with no attack in
+#: them at all. It is ``SPREAD_SAMPLES``' middle entry, so the mean-only ply is
+#: literally one of the three branches rather than a fourth number.
+MEAN_SPREAD = SPREAD_SAMPLES[1]
+
+
+def spread_samples(player_action: str, opponent_action: str, *, root: bool) -> tuple[float, ...]:
+    """Return the spreads to branch over for this action pair (E3.2).
+
+    Three equally likely samples when either side attacks **at the root ply**,
+    and exactly one otherwise, for two separate reasons:
+
+    * A turn in which neither side attacks draws no spread at all, so three
+      children would be three identical states — wrong as probability and
+      wasteful as cost. Mixed charge/guard lines are therefore cheap.
+    * Below the root ply the spread's contribution is dominated by the choice of
+      moves, and paying a 3× branching factor per ply is what pushes the search
+      past its time budget (E3.5). So deeper plies take the mean alone.
+    """
+    if root and (MOVES[player_action]["is_attack"] or MOVES[opponent_action]["is_attack"]):
+        return SPREAD_SAMPLES
+    return (MEAN_SPREAD,)
+
+
+def chance_children(
+    state: dict, player_action: str, opponent_action: str, *, root: bool
+) -> list[tuple[float, dict]]:
+    """Expand one turn into its ``(weight, child_state)`` pairs (E3.1, E3.2).
+
+    The weights are the sample probabilities and always sum to 1: ``1/3`` each
+    for a three-way root branch, ``1.0`` for a single child.
+
+    Every call passes an explicit ``spread`` **and** an explicit ``order``, so
+    ``rules.resolve_turn`` reaches neither of its two draw sites and ``rng=None``
+    is safe. That is E3.4's "the search must never be handed the live match RNG"
+    made structural rather than promised: there is no generator here to touch.
+    The order comes from ``rules.deterministic_order``, which breaks a speed tie
+    without a coin flip (B6).
+    """
+    order = deterministic_order(state)
+    samples = spread_samples(player_action, opponent_action, root=root)
+    weight = 1.0 / len(samples)
+    return [
+        (
+            weight,
+            resolve_turn(
+                state, player_action, opponent_action, None, order=order, spread=spread
+            )[0],
+        )
+        for spread in samples
+    ]
 
 
 def evaluate(state: dict, side: str) -> float:
