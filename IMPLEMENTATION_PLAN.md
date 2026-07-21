@@ -310,7 +310,7 @@ installed is the whole stack.
 
 ### 6. Bracket arithmetic (pure, no database)
 
-- [ ] **6.1 — `backend/game/bracket.py`.**
+- [x] **6.1 — `backend/game/bracket.py`.**
   Files: new `backend/game/bracket.py` — `bracket_size(n)`, `seed_order(size)` (E7.1's recursive
   interleave), `first_round_pairs(roster)` returning `(slot, seed_a, seed_b|None)` with byes on the
   top `size - n` seeds, `advance_position(round, slot) -> (round+1, slot//2, "a"|"b")`,
