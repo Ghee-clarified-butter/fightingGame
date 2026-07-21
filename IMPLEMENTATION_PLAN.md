@@ -226,7 +226,7 @@ installed is the whole stack.
 
 ### 3. Expectimax search
 
-- [ ] **3.1 — Evaluation function.**
+- [x] **3.1 — Evaluation function.**
   Files: new `backend/game/search.py` (`evaluate(state, side) -> float`, E3.3 verbatim).
   Tests: new `backend/tests/test_search.py` — terminal short-circuits to ±1000 and dominate any
   material term; sign and magnitude on hand-built winning / losing / exactly-equal positions;
