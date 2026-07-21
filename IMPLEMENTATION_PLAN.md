@@ -330,7 +330,7 @@ Not used: `flask-cors` (see A9), `requests`, any state/fetch library.
       and the bar widths are 78% and 15%; 0 hp renders a 0% width without collapsing the layout;
       Vega's 130 max scales correctly (width is a fraction of max, not an absolute).
 
-- [ ] **3.3 Move buttons.**
+- [x] **3.3 Move buttons.**
       Files: `frontend/src/components/MoveButtons.tsx`,
       `frontend/src/components/MoveButtons.test.tsx`.
       All six buttons, always rendered, each showing its ki cost. A button is disabled **iff** its
