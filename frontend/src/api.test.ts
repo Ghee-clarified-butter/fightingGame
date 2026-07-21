@@ -22,6 +22,7 @@ const STATE: MatchState = {
     guarding: false,
     ascended: false,
     ascend_used: false,
+    passive_streak: 0,
   },
   opponent: {
     id: "vega",
@@ -36,6 +37,7 @@ const STATE: MatchState = {
     guarding: false,
     ascended: false,
     ascend_used: false,
+    passive_streak: 0,
   },
   legal_actions: ["strike", "charge", "guard"],
   log: [],

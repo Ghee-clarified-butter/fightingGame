@@ -24,6 +24,7 @@ FIGHTER_KEYS = {
     "guarding",
     "ascended",
     "ascend_used",
+    "passive_streak",
 }
 LOG_ENTRY_KEYS = {"turn", "actor", "action", "damage", "target_hp", "text"}
 

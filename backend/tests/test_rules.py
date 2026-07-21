@@ -940,3 +940,72 @@ def test_play_turn_does_not_mutate_its_input():
     assert match == before
     assert new_state["turn"] == 1
     assert new_state["log"] == entries
+
+
+# --- passive_streak bookkeeping (extension E2.1) -----------------------------
+
+
+@pytest.mark.parametrize("action", ["charge", "guard", "ascend"])
+def test_a_non_attacking_action_increments_the_streak(action):
+    match = _match_with(player={"ki": 100})
+    new_state, _ = resolve_turn(match, action, "strike", random.Random(1))
+    assert new_state["player"]["passive_streak"] == 1
+
+
+@pytest.mark.parametrize("action", ["strike", "ki_blast", "surge_beam"])
+def test_an_attack_resets_the_streak(action):
+    match = _match_with(player={"ki": 100, "passive_streak": 2})
+    new_state, _ = resolve_turn(match, action, "charge", random.Random(1))
+    assert new_state["player"]["passive_streak"] == 0
+
+
+def test_consecutive_passive_turns_accumulate():
+    state = _match_with()
+    for expected in (1, 2, 3):
+        state, _ = resolve_turn(state, "charge", "strike", random.Random(expected))
+        assert state["player"]["passive_streak"] == expected
+
+
+def test_the_streak_is_tracked_independently_per_side():
+    """Each fighter counts its own actions, so one side's Charge is not the other's."""
+    state = _match_with()
+    state, _ = resolve_turn(state, "charge", "strike", random.Random(2))
+    assert state["player"]["passive_streak"] == 1
+    assert state["opponent"]["passive_streak"] == 0
+
+    state, _ = resolve_turn(state, "charge", "guard", random.Random(3))
+    assert state["player"]["passive_streak"] == 2
+    assert state["opponent"]["passive_streak"] == 1
+
+    state, _ = resolve_turn(state, "strike", "guard", random.Random(4))
+    assert state["player"]["passive_streak"] == 0
+    assert state["opponent"]["passive_streak"] == 2
+
+
+def test_a_streak_survives_a_turn_in_which_only_the_other_side_attacked():
+    match = _match_with(player={"passive_streak": 1}, opponent={"passive_streak": 4})
+    new_state, _ = resolve_turn(match, "guard", "ki_blast", random.Random(5))
+    assert new_state["player"]["passive_streak"] == 2
+    assert new_state["opponent"]["passive_streak"] == 0
+
+
+def test_a_skipped_attack_still_resets_its_owners_streak():
+    """B4: the chosen action drives the count, even for a fighter KO'd before it swings.
+
+    Vega is slower, so Kaito's Surge Beam resolves first and drops it to 0 hp;
+    Vega's Strike is skipped entirely (A8). The value is inert on a dead
+    fighter, but it records what was chosen rather than what landed.
+    """
+    match = _match_with(player={"ki": 100}, opponent={"hp": 1, "passive_streak": 2})
+    new_state, entries = resolve_turn(match, "surge_beam", "strike", random.Random(6))
+    assert new_state["opponent"]["hp"] == 0
+    assert [e["actor"] for e in entries] == ["player"]
+    assert new_state["opponent"]["passive_streak"] == 0
+
+
+def test_the_streak_never_constrains_what_the_player_may_submit():
+    """E2.1: the cap is a policy rule; ``legal_actions`` is unchanged by it."""
+    fresh = new_fighter("kaito")
+    stalling = new_fighter("kaito")
+    stalling["passive_streak"] = 5
+    assert legal_actions(stalling) == legal_actions(fresh)

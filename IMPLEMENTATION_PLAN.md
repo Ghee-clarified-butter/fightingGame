@@ -161,7 +161,7 @@ installed is the whole stack.
 
 ### 1. State and rules groundwork (contract changes first, so the suite is green after each)
 
-- [ ] **1.1 — Add `passive_streak` to the fighter and maintain it in `resolve_turn`.**
+- [x] **1.1 — Add `passive_streak` to the fighter and maintain it in `resolve_turn`.**
   Files: `backend/game/fighters.py` (`new_fighter` → `"passive_streak": 0`), `backend/game/rules.py`
   (`resolve_turn` per B4), `specs/base.md` §5.5 (add the key to the fighter example — E4.1 requires
   the two specs to agree), `backend/tests/test_api.py` (`FIGHTER_KEYS`),

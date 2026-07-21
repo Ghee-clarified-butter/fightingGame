@@ -38,6 +38,10 @@ STARTING_KI = 30
 def new_fighter(fighter_id: str) -> dict:
     """Return a fresh fighter at full hp and 30 ki (§2.1).
 
+    ``passive_streak`` starts at 0: it counts this fighter's consecutive
+    non-attacking actions so an AI policy can be stopped from stalling a match
+    (extension E2.1). It is bookkeeping only — it never enters ``legal_actions``.
+
     Raises ``UnknownFighterError`` for an id that is not a known template.
     """
     try:
@@ -58,4 +62,5 @@ def new_fighter(fighter_id: str) -> dict:
         "guarding": False,
         "ascended": False,
         "ascend_used": False,
+        "passive_streak": 0,
     }

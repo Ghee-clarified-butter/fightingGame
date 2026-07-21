@@ -343,6 +343,18 @@ def resolve_turn(
     for side in ("player", "opponent"):
         new_state[side]["guarding"] = False
 
+    # Passive-streak bookkeeping (extension E2.1, B4). Tracked for both sides
+    # off the *chosen* action, so an attack that was skipped because its owner
+    # was already KO'd still resets the count — the fighter is dead and the
+    # value is inert. Nothing here constrains the player: only an AI policy
+    # reads the streak, and ``legal_actions`` never does.
+    for side in ("player", "opponent"):
+        fighter = new_state[side]
+        if MOVES[actions[side]]["is_attack"]:
+            fighter["passive_streak"] = 0
+        else:
+            fighter["passive_streak"] += 1
+
     new_state["log"].extend(entries)
 
     # The rest of step 6: the win condition is checked once the turn is fully

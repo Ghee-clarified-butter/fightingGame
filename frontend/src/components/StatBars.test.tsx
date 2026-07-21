@@ -17,6 +17,7 @@ function kaito(overrides: Partial<Fighter> = {}): Fighter {
     guarding: false,
     ascended: false,
     ascend_used: false,
+    passive_streak: 0,
     ...overrides,
   };
 }
@@ -35,6 +36,7 @@ function vega(overrides: Partial<Fighter> = {}): Fighter {
     guarding: false,
     ascended: false,
     ascend_used: false,
+    passive_streak: 0,
     ...overrides,
   };
 }

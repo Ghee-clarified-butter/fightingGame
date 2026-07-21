@@ -34,6 +34,7 @@ backend owns all of it.
 | `guarding` | bool | Set by Guard; consumed during this turn's resolution |
 | `ascended` | bool | Whether the Ascend buff is currently active |
 | `ascend_used` | bool | Whether Ascend has been used this match (once per match) |
+| `passive_streak` | int | Consecutive non-attacking actions by this fighter; reset to 0 by any attack |
 
 `hp` is clamped to `[0, hp_max]`, `ki` to `[0, ki_max]`.
 
@@ -260,7 +261,8 @@ same seed produces without the rejected attempt in between.
     "id": "kaito", "name": "Kaito",
     "hp": 78, "hp_max": 100, "ki": 15, "ki_max": 100,
     "atk": 22, "def": 8, "spd": 14,
-    "guarding": false, "ascended": false, "ascend_used": false
+    "guarding": false, "ascended": false, "ascend_used": false,
+    "passive_streak": 0
   },
   "opponent": { "...": "same shape, Vega" },
   "legal_actions": ["strike", "charge", "guard"],

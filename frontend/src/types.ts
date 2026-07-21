@@ -36,6 +36,8 @@ export interface Fighter {
   guarding: boolean;
   ascended: boolean;
   ascend_used: boolean;
+  /** Consecutive non-attacking actions; AI bookkeeping only (E2.1). */
+  passive_streak: number;
 }
 
 export interface LogEntry {

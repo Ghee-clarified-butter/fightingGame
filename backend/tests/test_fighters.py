@@ -51,7 +51,14 @@ def test_new_fighter_has_exactly_the_spec_fields(fighter_id):
     assert set(new_fighter(fighter_id)) == {
         "id", "name", "hp", "hp_max", "ki", "ki_max",
         "atk", "def", "spd", "guarding", "ascended", "ascend_used",
+        "passive_streak",
     }
+
+
+@pytest.mark.parametrize("fighter_id", ["kaito", "vega"])
+def test_new_fighter_starts_with_no_passive_streak(fighter_id):
+    """A fresh fighter has taken no actions at all, passive or otherwise (E2.1)."""
+    assert new_fighter(fighter_id)["passive_streak"] == 0
 
 
 def test_two_copies_are_equal_but_independent():

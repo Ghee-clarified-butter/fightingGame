@@ -31,6 +31,7 @@ function state(overrides: Partial<MatchState> = {}): MatchState {
       guarding: false,
       ascended: false,
       ascend_used: false,
+      passive_streak: 0,
     },
     opponent: {
       id: "vega",
@@ -45,6 +46,7 @@ function state(overrides: Partial<MatchState> = {}): MatchState {
       guarding: false,
       ascended: false,
       ascend_used: false,
+      passive_streak: 0,
     },
     legal_actions: ["strike", "ki_blast", "charge", "guard"],
     log: [],
