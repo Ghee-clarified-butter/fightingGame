@@ -246,6 +246,69 @@ def test_a_match_created_without_a_difficulty_reports_random(client):
     assert create(client).get_json()["difficulty"] == "random"
 
 
+@pytest.mark.parametrize("difficulty", ["random", "heuristic", "search"])
+def test_each_difficulty_is_accepted_and_echoed(client, difficulty):
+    """E4: all three values are accepted and appear in the §5.5 payload."""
+    response = create(client, difficulty=difficulty)
+
+    assert response.status_code == 201
+    assert response.get_json()["difficulty"] == difficulty
+
+
+@pytest.mark.parametrize(
+    "difficulty",
+    ["easy", "hard", "Random", "SEARCH", "", "expectimax"],
+)
+def test_an_unknown_difficulty_string_is_rejected(client, difficulty):
+    response = create(client, difficulty=difficulty)
+
+    assert response.status_code == 400
+    error = response.get_json()["error"]
+    assert error["code"] == "unknown_difficulty"
+    # The §5.4 envelope: a code and a non-empty message, nothing else.
+    assert set(response.get_json()) == {"error"}
+    assert set(error) == {"code", "message"}
+    assert isinstance(error["message"], str) and error["message"]
+
+
+@pytest.mark.parametrize("difficulty", [1, 1.5, True, None, ["search"], {"x": 1}])
+def test_a_non_string_difficulty_is_rejected(client, difficulty):
+    """A number, bool, null or container is no more a difficulty than a typo is."""
+    response = create(client, difficulty=difficulty)
+
+    assert response.status_code == 400
+    assert response.get_json()["error"]["code"] == "unknown_difficulty"
+
+
+def test_a_rejected_difficulty_creates_no_match(client):
+    app = create_app()
+    rejected = app.test_client().post(
+        "/api/match",
+        json={
+            "player_fighter": "kaito",
+            "opponent_fighter": "vega",
+            "difficulty": "nightmare",
+        },
+    )
+
+    assert rejected.status_code == 400
+    assert app.extensions["matches"] == {}
+
+
+def test_omitting_difficulty_matches_step_one_apart_from_the_two_new_keys(client):
+    """E4/E10: an absent field ⇒ ``random``, and the payload is otherwise the
+    Step 1 shape plus exactly ``difficulty`` and each fighter's ``passive_streak``."""
+    state = create(client).get_json()
+
+    assert state["difficulty"] == "random"
+    assert set(state) - STATE_KEYS == set()
+    # Dropping the two new keys leaves the Step 1 §5.5 shape exactly.
+    assert set(state) - {"difficulty"} == STATE_KEYS - {"difficulty"}
+    for side in ("player", "opponent"):
+        assert set(state[side]) == FIGHTER_KEYS
+        assert state[side]["passive_streak"] == 0
+
+
 def test_the_difficulty_is_reported_on_every_read_of_the_match(client):
     """It is fixed at creation, so GET and a played turn both echo it back."""
     app = create_app()

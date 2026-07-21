@@ -294,7 +294,7 @@ installed is the whole stack.
 
 ### 5. Part A endpoints
 
-- [ ] **5.1 — `difficulty` on `POST /api/match`.**
+- [x] **5.1 — `difficulty` on `POST /api/match`.**
   Files: `backend/app.py` (`_parse_difficulty` → `unknown_difficulty` 400, absent ⇒ `"random"`).
   Tests: `backend/tests/test_api.py` — each of the three values is accepted and echoed in the
   payload; an unknown value returns 400 `unknown_difficulty` with the §5.4 envelope and creates **no**

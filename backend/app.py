@@ -63,6 +63,26 @@ def _parse_seed(payload: dict):
     return seed, None
 
 
+def _parse_difficulty(payload: dict):
+    """Return ``(difficulty, error)`` for the optional ``difficulty`` field (E4).
+
+    Absent ⇒ ``"random"`` (E4: every Step 1 request stays valid). Any value
+    outside :data:`ai.DIFFICULTIES` — including a non-string — is a 400
+    ``unknown_difficulty``. Validation lives here, not in the rules (§6): the
+    routes decide what a request may ask for, the rules decide what happens.
+    """
+    if "difficulty" not in payload:
+        return "random", None
+    difficulty = payload["difficulty"]
+    if difficulty not in ai.DIFFICULTIES:
+        return None, _error(
+            "unknown_difficulty",
+            f"difficulty must be one of {list(ai.DIFFICULTIES)}; got {difficulty!r}.",
+            400,
+        )
+    return difficulty, None
+
+
 def _validate_action(state: dict, action):
     """Return an error response for ``action``, or ``None`` if it is playable.
 
@@ -124,9 +144,15 @@ def create_app() -> Flask:
         if error is not None:
             return error
 
+        difficulty, error = _parse_difficulty(payload)
+        if error is not None:
+            return error
+
         try:
             state = rules.new_match(
-                payload.get("player_fighter"), payload.get("opponent_fighter")
+                payload.get("player_fighter"),
+                payload.get("opponent_fighter"),
+                difficulty=difficulty,
             )
         except UnknownFighterError as exc:
             return _error("unknown_fighter", f"Unknown fighter id: {exc.args[0]!r}.", 400)
