@@ -255,7 +255,7 @@ installed is the whole stack.
   root cap forces an attack after two passive turns; the instrumented counts are exactly 90 root
   children and 3097 leaves on a full-hp/full-ki position, and within E3.5's 108/3888 ceilings (B7).
 
-- [ ] **3.4 — Time budget.**
+- [x] **3.4 — Time budget.**
   Files: `backend/game/search.py` only if it misses.
   Tests: `test_search.py` — a selection on the worst-case position (both sides full ki, all six moves
   legal) completes in **under 150 ms** (B8), timed with `time.perf_counter` over a warm call. If

@@ -10,6 +10,7 @@ AI plays.
 import copy
 import inspect
 import random
+import time
 
 import pytest
 
@@ -508,3 +509,70 @@ def test_a_decided_line_is_not_expanded_any_further(monkeypatch):
     counts = _count_children(lethal, "opponent", monkeypatch)
     full = _count_children(_worst_case_position(), "opponent", monkeypatch)
     assert counts[False] < full[False]
+
+
+#: E3.5 / B8's budget for one ``search`` move selection, in milliseconds. E11
+#: says 100 ms; E3.5 is the derivation and E10 is the acceptance criterion, so
+#: 150 wins (B8).
+BUDGET_MS = 150.0
+
+#: Timed repeats after the warm-up call. The fastest is the one asserted on: a
+#: slower sample only ever means the machine was doing something else at the
+#: time, so taking the minimum measures the search rather than the scheduler.
+#: Five is enough to shake off a stray GC pause without making the suite slow.
+TIMED_REPEATS = 5
+
+
+def _fastest_selection_ms(state: dict, side: str, depth: int = DEFAULT_DEPTH) -> float:
+    """Milliseconds for the quickest of :data:`TIMED_REPEATS` warm selections."""
+    choose(state, side, depth)  # Warm: import, bytecode and caches are not the subject.
+    best = float("inf")
+    for _ in range(TIMED_REPEATS):
+        started = time.perf_counter()
+        choose(state, side, depth)
+        best = min(best, (time.perf_counter() - started) * 1000.0)
+    return best
+
+
+def test_a_worst_case_selection_fits_in_the_time_budget():
+    """E3.5: under 150 ms on both sides at full ki, with all six moves legal.
+
+    Measured at 90-99 ms per selection on the reference machine (CPython 3.13.5,
+    Windows 11), so depth 2 meets the budget with roughly a third of it to spare
+    and **no B9 mitigation is applied**: no memoization, no alpha-beta, and the
+    depth stays at :data:`DEFAULT_DEPTH` rather than dropping to 1.
+
+    The margin is real but not vast, which is the point of asserting it here: a
+    change that widens the tree — chance branching below the root, a third ply,
+    a costlier ``evaluate`` — trips this test rather than showing up later as a
+    laggy turn endpoint.
+    """
+    elapsed = _fastest_selection_ms(_worst_case_position(), "opponent")
+    assert elapsed < BUDGET_MS, f"worst-case selection took {elapsed:.1f} ms"
+
+
+def test_both_sides_are_inside_the_budget():
+    """The search plays either side (AI vs AI in E8), and Vega's bigger hp pool
+    and cheaper beam are not the reason the tree is the size it is — so the
+    player side has to hold the same budget, not merely the opponent side the
+    single-match endpoint uses."""
+    elapsed = _fastest_selection_ms(_worst_case_position(), "player")
+    assert elapsed < BUDGET_MS, f"player-side selection took {elapsed:.1f} ms"
+
+
+def test_the_budget_is_met_through_the_difficulty_dispatch_too():
+    """What the server actually calls is ``ai.choose_action``, not ``choose``.
+
+    The cap check and the legal-move filter it adds are O(6), so this is the same
+    measurement plus a rounding error — asserted anyway, because the budget is a
+    claim about picking a move in a real match, not about a function in isolation.
+    """
+    state = _worst_case_position()
+    rng = random.Random(7)
+    choose_action(state, "opponent", "search", rng)
+    best = float("inf")
+    for _ in range(TIMED_REPEATS):
+        started = time.perf_counter()
+        choose_action(state, "opponent", "search", rng)
+        best = min(best, (time.perf_counter() - started) * 1000.0)
+    assert best < BUDGET_MS, f"dispatched selection took {best:.1f} ms"
