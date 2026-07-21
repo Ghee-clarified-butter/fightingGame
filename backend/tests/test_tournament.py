@@ -4,8 +4,9 @@ Exercises ``tournament.create_tournament`` and ``tournament.advance`` against a
 temp-file database: the whole bracket is built at creation with byes pre-resolved
 and never played, every bad input is rejected without leaving a row behind, and
 advancing plays the next ready match AI-vs-AI, replays drawn attempts rather than
-awarding them (E7.4), propagates winners and reaches a champion. Serialization
-and standings arrive in task 8.3.
+awarding them (E7.4), propagates winners and reaches a champion.
+``serialize_bracket`` (task 8.3) renders the E8.1 object and its derived
+standings.
 """
 
 import json
@@ -496,3 +497,137 @@ def test_results_survive_a_restart(tmp_path):
     assert _position_summary(session2, tournament_id) == before
     session2.close()
     engine2.dispose()
+
+
+# --- serialization: the E8.1 bracket object and standings (task 8.3) ---------
+
+
+def test_serialized_bracket_key_set_matches_the_spec(tmp_path):
+    """The payload's key sets match E8.1 exactly, before and after a playthrough."""
+    session = _session(tmp_path)
+    tour = tournament.create_tournament(session, "Spring Cup", _roster(5),
+                                        "heuristic", 8)
+
+    def _check(payload):
+        assert set(payload) == {
+            "tournament_id", "name", "difficulty", "seed", "size", "status",
+            "champion", "rounds", "standings",
+        }
+        assert payload["tournament_id"] == tour.id
+        assert (payload["name"], payload["difficulty"], payload["seed"],
+                payload["size"]) == ("Spring Cup", "heuristic", 8, 8)
+        for round_ in payload["rounds"]:
+            assert set(round_) == {"round", "matches"}
+            for match in round_["matches"]:
+                assert set(match) == {
+                    "match_id", "slot", "status", "fighter_a", "fighter_b",
+                    "winner", "turns",
+                }
+                for side in ("fighter_a", "fighter_b", "winner"):
+                    entrant = match[side]
+                    assert entrant is None or set(entrant) == {
+                        "id", "name", "display"}
+        for row in payload["standings"]:
+            assert set(row) == {"fighter", "wins", "losses", "eliminated_in"}
+            assert set(row["fighter"]) == {"id", "name", "display"}
+
+    fresh = tournament.serialize_bracket(tour)
+    _check(fresh)
+    assert fresh["status"] == "pending"
+    assert fresh["champion"] is None
+    # Rounds are ordered and complete: log2(8) = 3 rounds, slot counts 4/2/1.
+    assert [r["round"] for r in fresh["rounds"]] == [1, 2, 3]
+    assert [len(r["matches"]) for r in fresh["rounds"]] == [4, 2, 1]
+
+    _play_out(session, tour.id)
+    done = tournament.serialize_bracket(tour)
+    _check(done)
+    assert done["status"] == "complete"
+    assert done["champion"] is not None
+    assert done["champion"]["id"] == tour.champion_id
+
+
+def test_serialized_bye_shows_a_winner_and_no_turn_count(tmp_path):
+    """A bye match: fighter_b null, a winner set, turns null, never played."""
+    session = _session(tmp_path)
+    tour = tournament.create_tournament(session, "Cup", _roster(5), "heuristic", 9)
+
+    payload = tournament.serialize_bracket(tour)
+    round1 = {m["slot"]: m for m in payload["rounds"][0]["matches"]}
+    bye = round1[0]
+
+    assert bye["status"] == "bye"
+    assert bye["fighter_b"] is None
+    assert bye["fighter_a"]["id"] == bye["winner"]["id"]
+    assert bye["turns"] is None
+
+
+def test_standings_arithmetic_over_a_full_playthrough(tmp_path):
+    """Wins, losses and eliminated_in are correct; the champion's is null (E8.1)."""
+    session = _session(tmp_path)
+    tour = tournament.create_tournament(session, "Cup", _roster(4), "heuristic", 7)
+    _play_out(session, tour.id)
+
+    payload = tournament.serialize_bracket(tour)
+    standings = payload["standings"]
+
+    # Four entrants, one row each; sorted wins descending.
+    assert len(standings) == 4
+    assert [row["wins"] for row in standings] == sorted(
+        (row["wins"] for row in standings), reverse=True)
+
+    # The champion: two wins (a 4-bracket is two rounds), no loss, not eliminated.
+    champ = standings[0]
+    assert champ["fighter"]["id"] == tour.champion_id
+    assert champ["wins"] == 2
+    assert champ["losses"] == 0
+    assert champ["eliminated_in"] is None
+
+    # Every other entrant lost exactly once and carries the round they lost in.
+    for row in standings[1:]:
+        assert row["losses"] == 1
+        assert row["eliminated_in"] in (1, 2)
+    # Exactly one finalist (lost in round 2) and two first-round losers.
+    assert sorted(row["eliminated_in"] for row in standings[1:]) == [1, 1, 2]
+    # Conservation: every completed match makes exactly one win and one loss.
+    assert (sum(row["wins"] for row in standings)
+            == sum(row["losses"] for row in standings) == 3)
+
+
+def test_byes_count_as_neither_a_win_nor_a_loss(tmp_path):
+    """A fighter that only had a bye so far has zero wins and zero losses (E8.1)."""
+    session = _session(tmp_path)
+    # n=5 → seeds 1, 2, 3 get byes; advance nothing, so no match is decided yet.
+    tour = tournament.create_tournament(session, "Cup", _roster(5), "heuristic", 9)
+
+    standings = {row["fighter"]["display"]: row
+                 for row in tournament.serialize_bracket(tour)["standings"]}
+    # Every entrant is present with a clean slate; the bye added nothing.
+    assert len(standings) == 5
+    for row in standings.values():
+        assert row["wins"] == 0
+        assert row["losses"] == 0
+        assert row["eliminated_in"] is None
+
+
+def test_duplicate_entrants_get_distinct_display_strings(tmp_path):
+    """Two same-fighter entrants stay two rows with distinct displays (B11)."""
+    session = _session(tmp_path)
+    tour = tournament.create_tournament(session, "Mirror", ["kaito", "kaito"],
+                                        "heuristic", 1)
+
+    standings = tournament.serialize_bracket(tour)["standings"]
+    displays = sorted(row["fighter"]["display"] for row in standings)
+    assert displays == ["Kaito (1)", "Kaito (2)"]
+    # Same fighter id, but never merged into one row.
+    assert len(standings) == 2
+    assert all(row["fighter"]["id"] == "kaito" for row in standings)
+
+    # After playing the single final, one has a win and one a loss — not one
+    # merged row that is at once winning and eliminated.
+    _play_out(session, tour.id)
+    resolved = tournament.serialize_bracket(tour)["standings"]
+    assert sorted(row["wins"] for row in resolved) == [0, 1]
+    assert sorted(row["losses"] for row in resolved) == [0, 1]
+    assert resolved[0]["eliminated_in"] is None  # champion sorts first
+    assert resolved[1]["eliminated_in"] == 1  # lost in the only round

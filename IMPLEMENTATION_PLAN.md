@@ -374,7 +374,7 @@ installed is the whole stack.
   **persistence** — create, advance, `session.close()` + `engine.dispose()`, rebuild against
   the same file, and the bracket and standings compare equal.
 
-- [ ] **8.3 — Bracket serialization and standings.**
+- [x] **8.3 — Bracket serialization and standings.**
   Files: `backend/tournament.py` — `serialize_bracket(tournament)` producing E8.1 exactly (rounds,
   per-match `fighter_a`/`fighter_b`/`winner` objects with `id`, `name` and `display` per B11, `turns`,
   `status`, `champion`), plus derived `standings` (never stored) with `wins`, `losses` and

@@ -9,7 +9,8 @@ never builds a bracket or picks a match itself.
 Task 8.1 built the whole bracket at creation; task 8.2 (``advance``) plays the
 next ready match AI-vs-AI at its derived seed, replays a drawn attempt rather
 than awarding it (E7.4), promotes the winner one round forward, and completes the
-tournament when the final resolves. Serializing the bracket lands in task 8.3.
+tournament when the final resolves. Task 8.3 (``serialize_bracket``) renders it as
+the E8.1 object with derived, never-stored standings.
 """
 
 import json
@@ -329,3 +330,113 @@ def advance(session, tournament_id: str, *, match_id: str | None = None):
 
     session.flush()
     return tournament
+
+
+def _entrant(fighter_id, seed) -> dict | None:
+    """The E8.1 fighter object for a bracket side, or ``None`` if undetermined.
+
+    ``id`` and ``name`` come from ``fighters.py`` (never the database, E6.1);
+    ``display`` is ``"Kaito (2)"`` — the name plus the **seed** (B11), built here
+    so the client never assembles it and two entrants of the same fighter stay
+    distinguishable. A side is present iff it has a seed (``_propagate`` always
+    sets id and seed together), so ``seed is None`` — an unresolved slot or the B
+    side of a bye — serializes to ``None``.
+    """
+    if seed is None or fighter_id is None:
+        return None
+    name = FIGHTERS[fighter_id]["name"]
+    return {"id": fighter_id, "name": name, "display": f"{name} ({seed})"}
+
+
+def _standings(tournament: models.Tournament) -> list[dict]:
+    """Derive the standings table (E8.1) — never stored, always recomputed (B11).
+
+    Every entrant is one row keyed by **seed**, so a ``["kaito", "kaito"]``
+    bracket is two rows, never one merged one (E7.2). Wins and losses are counted
+    over ``complete`` matches only — a **bye is neither** (E8.1). Each entrant
+    loses at most once in single elimination, so ``eliminated_in`` is the round of
+    that single loss, or ``None`` for the (still-unbeaten) champion.
+
+    Sorted wins descending, then fighter name, then seed ascending — the seed
+    tie-break makes the order total even when two rows share a name (B11).
+    """
+    entrants: dict[int, str] = {}
+    for match in tournament.matches:
+        if match.round != 1:
+            continue
+        if match.fighter_a_seed is not None:
+            entrants[match.fighter_a_seed] = match.fighter_a_id
+        if match.fighter_b_seed is not None:
+            entrants[match.fighter_b_seed] = match.fighter_b_id
+
+    rows = {seed: {"wins": 0, "losses": 0, "eliminated_in": None}
+            for seed in entrants}
+    for match in tournament.matches:
+        if match.status != MATCH_COMPLETE or match.winner_seed is None:
+            continue
+        rows[match.winner_seed]["wins"] += 1
+        for seed in (match.fighter_a_seed, match.fighter_b_seed):
+            if seed is not None and seed != match.winner_seed:
+                rows[seed]["losses"] += 1
+                rows[seed]["eliminated_in"] = match.round
+
+    ordered = sorted(
+        entrants,
+        key=lambda seed: (-rows[seed]["wins"],
+                          FIGHTERS[entrants[seed]]["name"], seed),
+    )
+    return [{
+        "fighter": _entrant(entrants[seed], seed),
+        "wins": rows[seed]["wins"],
+        "losses": rows[seed]["losses"],
+        "eliminated_in": rows[seed]["eliminated_in"],
+    } for seed in ordered]
+
+
+def serialize_bracket(tournament: models.Tournament) -> dict:
+    """Render a tournament as the E8.1 bracket object (task 8.3).
+
+    Rounds in order, each match carrying ``fighter_a`` / ``fighter_b`` / ``winner``
+    entrant objects (``None`` where a side is a bye or still undetermined),
+    ``turns`` and ``status``. ``champion`` is the final's winner once the
+    tournament is ``complete`` and ``None`` before that. ``standings`` is derived
+    fresh here (:func:`_standings`) and never persisted.
+
+    Pure and read-only: it reads the already-loaded relationship and touches no
+    session, so the HTTP layer can serialize inside or outside a transaction.
+    """
+    rounds = []
+    by_round: dict[int, list[models.TournamentMatch]] = {}
+    for match in tournament.matches:
+        by_round.setdefault(match.round, []).append(match)
+
+    for round_ in sorted(by_round):
+        matches = []
+        for match in sorted(by_round[round_], key=lambda m: m.slot):
+            matches.append({
+                "match_id": match.id,
+                "slot": match.slot,
+                "status": match.status,
+                "fighter_a": _entrant(match.fighter_a_id, match.fighter_a_seed),
+                "fighter_b": _entrant(match.fighter_b_id, match.fighter_b_seed),
+                "winner": _entrant(match.winner_id, match.winner_seed),
+                "turns": match.turns,
+            })
+        rounds.append({"round": round_, "matches": matches})
+
+    champion = None
+    if tournament.status == STATUS_COMPLETE and by_round:
+        final = min(by_round[max(by_round)], key=lambda m: m.slot)
+        champion = _entrant(final.winner_id, final.winner_seed)
+
+    return {
+        "tournament_id": tournament.id,
+        "name": tournament.name,
+        "difficulty": tournament.difficulty,
+        "seed": tournament.seed,
+        "size": tournament.size,
+        "status": tournament.status,
+        "champion": champion,
+        "rounds": rounds,
+        "standings": _standings(tournament),
+    }
