@@ -341,7 +341,7 @@ Not used: `flask-cors` (see A9), `requests`, any state/fetch library.
       button is disabled even when legal; clicking fires `onSelect` with the action id; with
       `legal_actions: []` nothing is clickable.
 
-- [ ] **3.4 Battle log.**
+- [x] **3.4 Battle log.**
       Files: `frontend/src/components/BattleLog.tsx`, `frontend/src/components/BattleLog.test.tsx`.
       Scrolling list rendered from `log[].text` only, oldest first, newest visible (§7).
       Tests: three entries render in oldest-first order with the exact `text` strings; the component
