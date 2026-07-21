@@ -7,6 +7,7 @@ import pytest
 
 from app import create_app, serialize
 from game import ai, rules
+from game.moves import MOVES
 
 # The §5.5 payload, key for key. Written out literally rather than derived from
 # the code so a field that quietly appears or disappears fails a test.
@@ -851,3 +852,114 @@ def test_a_finished_match_offers_no_legal_actions(client):
     # one-off in the turn response.
     refetched = client.get(f"/api/match/{state['match_id']}").get_json()
     assert refetched["legal_actions"] == []
+
+
+# --- Turns honour the match's difficulty (task 5.2 / §5.2, E10, §5.4) -------
+#
+# The opponent's policy is read from ``state["difficulty"]`` and threaded through
+# ``ai.play_turn`` (B5), so a match plays out under the difficulty it was created
+# with and no caller has to remember it. These tests pin the four consequences
+# that show at the HTTP surface: determinism holds at *every* difficulty, not
+# just ``random``; the player's ``legal_actions`` never depend on which policy
+# the opponent runs (E2.1); a rejected turn advances the RNG at no difficulty
+# (§5.4); and the AI's own logged moves honour the E2.1 streak cap.
+
+
+def made(client, seed, difficulty, player="kaito", opponent="vega"):
+    """Create a seeded match at ``difficulty`` and return its id."""
+    return create(
+        client, player, opponent, seed=seed, difficulty=difficulty
+    ).get_json()["match_id"]
+
+
+@pytest.mark.parametrize("difficulty", ai.DIFFICULTIES)
+def test_same_seed_and_actions_are_identical_at_every_difficulty(client, difficulty):
+    """E10: a fixed seed and a fixed player script reproduce log and final state
+    exactly under each policy — the heuristic and the search are pure, so they
+    add no hidden draw that a replay could diverge on (E3.4)."""
+    first_id = made(client, 5150, difficulty, "kaito", "kaito")
+    first, actions = play_cycle_to_the_end(client, first_id)
+
+    second_id = made(client, 5150, difficulty, "kaito", "kaito")
+    second = play_sequence(client, second_id, actions)
+
+    assert first_id != second_id
+    assert second["log"] == first["log"]
+    assert second == dict(first, match_id=second_id)
+
+
+def test_legal_actions_do_not_depend_on_the_difficulty(client):
+    """The player's options are a function of the player, not the opponent's
+    policy: same seed + same player actions ⇒ identical ``legal_actions`` at every
+    difficulty, for as long as all three matches are still in progress. Only ki
+    and ``ascend_used`` move ``legal_actions``, and the opponent's choice touches
+    neither, so difficulty can never reach it (E2.1)."""
+    ids = {difficulty: made(client, 4242, difficulty) for difficulty in ai.DIFFICULTIES}
+    sequence = ("charge", "strike", "guard", "ki_blast", "charge", "strike")
+
+    compared = 0
+    for action in sequence:
+        legal = {}
+        for difficulty, match_id in ids.items():
+            state = client.get(f"/api/match/{match_id}").get_json()
+            if state["status"] != rules.STATUS_IN_PROGRESS:
+                break
+            legal[difficulty] = state["legal_actions"]
+        else:
+            # Every match is still live: the player's options must agree exactly.
+            assert len({tuple(v) for v in legal.values()}) == 1
+            compared += 1
+            for difficulty, match_id in ids.items():
+                assert action in legal[difficulty]
+                play_sequence(client, match_id, [action])
+            continue
+        break
+
+    assert compared, "no turn was compared while every match was in progress"
+
+
+@pytest.mark.parametrize("difficulty", ai.DIFFICULTIES)
+def test_a_rejected_turn_does_not_advance_the_rng_at_any_difficulty(client, difficulty):
+    """§5.4 at every policy: a clean run and one with rejections interleaved at
+    every step end byte-identical. A validation path that drew the opponent's
+    move — or a spread — before rejecting would desynchronise the rest, no matter
+    which policy picks that move."""
+    clean_id = made(client, 31337, difficulty)
+    clean = play_sequence(client, clean_id, LEGAL_SEQUENCE)
+
+    dirty_id = made(client, 31337, difficulty)
+    # Kaito opens on 30 ki, so Surge Beam is unaffordable before a single turn is
+    # played — a rejection that lands before the first draw of the match.
+    reject(client, dirty_id, {"action": "surge_beam"}, "insufficient_ki")
+    for index, action in enumerate(LEGAL_SEQUENCE):
+        reject(client, dirty_id, {"action": "punch"}, "unknown_action")
+        reject(client, dirty_id, {}, "unknown_action")
+        assert play_sequence(client, dirty_id, [action])["turn"] == index + 1
+    dirty = client.get(f"/api/match/{dirty_id}").get_json()
+
+    assert dirty["log"] == clean["log"]
+    assert dirty["player"] == clean["player"]
+    assert dirty["opponent"] == clean["opponent"]
+    assert dirty["turn"] == clean["turn"]
+    assert dirty["status"] == clean["status"]
+
+
+def test_the_ai_never_breaks_the_streak_cap_over_a_played_out_match(client):
+    """E2.1/E10: over a full heuristic match played through the API the
+    opponent's logged actions never show three non-attacking moves in a row.
+
+    Only real, resolved choices reach the log — an attack skipped because its
+    owner was already KO'd is not logged — but that skip can only happen on the
+    terminal turn, so it can never split a mid-match passive streak."""
+    match_id = made(client, 777, "heuristic", "kaito", "kaito")
+    state, _ = play_cycle_to_the_end(client, match_id)
+
+    opponent_actions = [
+        entry["action"] for entry in state["log"] if entry["actor"] == "opponent"
+    ]
+    assert opponent_actions, "the opponent never acted"
+
+    streak = 0
+    for action in opponent_actions:
+        streak = 0 if MOVES[action]["is_attack"] else streak + 1
+        assert streak <= ai.PASSIVE_CAP, f"cap breached at {action}: {opponent_actions}"

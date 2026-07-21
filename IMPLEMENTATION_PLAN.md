@@ -301,7 +301,7 @@ installed is the whole stack.
   match (the store stays empty); a non-string value is rejected the same way; omitting the field
   still yields `"random"` and a byte-identical payload to Step 1's apart from the two new keys.
 
-- [ ] **5.2 — Turns honour the match's difficulty.**
+- [x] **5.2 — Turns honour the match's difficulty.**
   Files: `backend/app.py` (pass `state["difficulty"]` through `ai.play_turn`).
   Tests: `test_api.py` — same seed + same player actions ⇒ identical logs and final states at *every*
   difficulty (E10); `legal_actions` is unaffected by difficulty; a rejected turn still leaves the RNG
