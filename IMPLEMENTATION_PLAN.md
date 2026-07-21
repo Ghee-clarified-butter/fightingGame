@@ -403,7 +403,7 @@ installed is the whole stack.
 
 ### 10. Frontend
 
-- [ ] **10.1 — Types and API module.**
+- [x] **10.1 — Types and API module.**
   Files: `frontend/src/types.ts` (`Difficulty`, `Bracket`, `BracketRound`, `BracketMatch`,
   `StandingsRow`, `TournamentSummary`, the new error codes), `frontend/src/api.ts`
   (`createMatch(..., difficulty)`, `createTournament`, `getTournament`, `advanceTournament`,

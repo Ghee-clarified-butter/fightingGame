@@ -1,8 +1,16 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createMatch, getMatch, submitTurn } from "./api";
-import { ApiError, type MatchState } from "./types";
+import {
+  advanceTournament,
+  createMatch,
+  createTournament,
+  getMatch,
+  getTournament,
+  listTournaments,
+  submitTurn,
+} from "./api";
+import { ApiError, type Bracket, type MatchState, type TournamentSummary } from "./types";
 
 /** A minimal but shape-correct §5.5 payload; the API module only passes it through. */
 const STATE: MatchState = {
@@ -42,6 +50,56 @@ const STATE: MatchState = {
   },
   legal_actions: ["strike", "charge", "guard"],
   log: [],
+};
+
+/** A minimal but shape-correct E8.1 bracket; the API module only passes it through. */
+const BRACKET: Bracket = {
+  tournament_id: "3f9a",
+  name: "Spring Cup",
+  difficulty: "heuristic",
+  seed: 99,
+  size: 2,
+  status: "pending",
+  champion: null,
+  rounds: [
+    {
+      round: 1,
+      matches: [
+        {
+          match_id: "a1",
+          slot: 0,
+          status: "ready",
+          fighter_a: { id: "kaito", name: "Kaito", display: "Kaito (1)" },
+          fighter_b: { id: "vega", name: "Vega", display: "Vega (2)" },
+          winner: null,
+          turns: null,
+        },
+      ],
+    },
+  ],
+  standings: [
+    {
+      fighter: { id: "kaito", name: "Kaito", display: "Kaito (1)" },
+      wins: 0,
+      losses: 0,
+      eliminated_in: null,
+    },
+    {
+      fighter: { id: "vega", name: "Vega", display: "Vega (2)" },
+      wins: 0,
+      losses: 0,
+      eliminated_in: null,
+    },
+  ],
+};
+
+/** A minimal `GET /api/tournaments` row. */
+const SUMMARY: TournamentSummary = {
+  id: "3f9a",
+  name: "Spring Cup",
+  status: "complete",
+  champion: { id: "kaito", name: "Kaito", display: "Kaito (1)" },
+  created_at: "2026-07-21T00:00:00",
 };
 
 function stubFetch(status: number, body: unknown) {
@@ -92,6 +150,113 @@ describe("createMatch", () => {
       opponent_fighter: "kaito",
       seed: 12345,
     });
+  });
+
+  it("sends difficulty when given and omits it otherwise", async () => {
+    const fetchMock = stubFetch(201, STATE);
+
+    await createMatch("kaito", "vega", 7, "search");
+
+    const { init } = callOf(fetchMock);
+    expect(JSON.parse(String(init?.body))).toEqual({
+      player_fighter: "kaito",
+      opponent_fighter: "vega",
+      seed: 7,
+      difficulty: "search",
+    });
+  });
+});
+
+describe("createTournament", () => {
+  it("POSTs name, roster, difficulty and seed to the tournament path", async () => {
+    const fetchMock = stubFetch(201, BRACKET);
+
+    await expect(
+      createTournament("Spring Cup", ["kaito", "vega"], "heuristic", 99),
+    ).resolves.toEqual(BRACKET);
+
+    const { url, init } = callOf(fetchMock);
+    expect(url).toBe("/api/tournament");
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(String(init?.body))).toEqual({
+      name: "Spring Cup",
+      roster: ["kaito", "vega"],
+      difficulty: "heuristic",
+      seed: 99,
+    });
+  });
+
+  it("throws an ApiError carrying the server's invalid_roster code", async () => {
+    stubFetch(400, {
+      error: { code: "invalid_roster", message: "a roster of 1 is not a legal size (2..16)." },
+    });
+
+    const error = await createTournament("Cup", ["kaito"], "random", 1).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ApiError);
+    expect((error as ApiError).code).toBe("invalid_roster");
+    expect((error as ApiError).status).toBe(400);
+  });
+});
+
+describe("getTournament", () => {
+  it("GETs the relative tournament path for the given id", async () => {
+    const fetchMock = stubFetch(200, BRACKET);
+
+    await expect(getTournament("3f9a")).resolves.toEqual(BRACKET);
+
+    const { url, init } = callOf(fetchMock);
+    expect(url).toBe("/api/tournament/3f9a");
+    expect(init?.method).toBe("GET");
+    expect(init?.body).toBeUndefined();
+  });
+
+  it("reports a 404 as tournament_not_found", async () => {
+    stubFetch(404, {
+      error: { code: "tournament_not_found", message: "No tournament with id 'nope'." },
+    });
+
+    const error = await getTournament("nope").catch((e: unknown) => e);
+
+    expect((error as ApiError).code).toBe("tournament_not_found");
+    expect((error as ApiError).status).toBe(404);
+  });
+});
+
+describe("advanceTournament", () => {
+  it("POSTs to the advance path with no body and returns the updated bracket", async () => {
+    const fetchMock = stubFetch(200, BRACKET);
+
+    await expect(advanceTournament("3f9a")).resolves.toEqual(BRACKET);
+
+    const { url, init } = callOf(fetchMock);
+    expect(url).toBe("/api/tournament/3f9a/advance");
+    expect(init?.method).toBe("POST");
+    expect(init?.body).toBeUndefined();
+  });
+
+  it("surfaces a 409 tournament_complete as an ApiError", async () => {
+    stubFetch(409, {
+      error: { code: "tournament_complete", message: "Tournament '3f9a' is already complete." },
+    });
+
+    const error = await advanceTournament("3f9a").catch((e: unknown) => e);
+
+    expect((error as ApiError).code).toBe("tournament_complete");
+    expect((error as ApiError).status).toBe(409);
+  });
+});
+
+describe("listTournaments", () => {
+  it("GETs the list path and parses the array of summaries", async () => {
+    const fetchMock = stubFetch(200, [SUMMARY]);
+
+    await expect(listTournaments()).resolves.toEqual([SUMMARY]);
+
+    const { url, init } = callOf(fetchMock);
+    expect(url).toBe("/api/tournaments");
+    expect(init?.method).toBe("GET");
+    expect(init?.body).toBeUndefined();
   });
 });
 
