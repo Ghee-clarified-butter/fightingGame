@@ -264,7 +264,7 @@ installed is the whole stack.
 
 ### 4. AI-vs-AI harness and strength
 
-- [ ] **4.1 — Headless match runner.**
+- [x] **4.1 — Headless match runner.**
   Files: new `backend/game/arena.py` — `run_ai_match(a_id, b_id, difficulty, seed) -> dict` with
   `{"winner": "a"|"b", "winner_side", "turns", "status", "log"}`, driving both sides through
   `ai.choose_action` and `rules.resolve_turn` with a single `random.Random(seed)`; side A is the
