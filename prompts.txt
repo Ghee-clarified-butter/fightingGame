@@ -1,26 +1,19 @@
 ================================================================================
 FIGHTING GAME — PROMPT LOG
-Every prompt given to an agent, in order.
+The prompts given to the agent, in order, by stage.
+
+Specify and Review are manual stages: the prompt text below is what was given to
+the interactive agent. Plan and Build are loop stages: the agent prompt is the
+PROMPT_plan.md / PROMPT_build.md shown under BOOTSTRAP, and each stage lists the
+loop invocation(s) used to drive it.
 ================================================================================
 
-# STEP 0 / BOOTSTRAP — interactive Claude Code session
 
-read the file and familiarize yourself with the project
-(referring to CLAUDE_CODE_RUNBOOK.md)
+================================================================================
+# BOOTSTRAP — the two loop-agent prompts (reused by every Plan and Build stage)
+================================================================================
 
-yes
-(approval to run the Step 0 bootstrap: create loop.sh, AGENTS.md, PROMPT_plan.md,
-PROMPT_build.md and the required assignment files, then commit)
-
-repo is public; create a docs, put in git ignore, and dcument every step that you took
-
-can you fix those things?
-(referring to three risks raised after the bootstrap: the loop running with
---dangerously-skip-permissions outside a sandbox, the fragile DONE-promise stop
-condition, and loop.sh being unrunnable from PowerShell)
-
-
-# STEP 0 / BOOTSTRAP — PROMPT_plan.md (fed to the agent by loop.sh in plan mode)
+# PROMPT_plan.md — fed to the agent by `loop.sh -m plan`
 
 You are in PLAN MODE. Do NOT write application code.
 
@@ -42,7 +35,7 @@ restate these instructions, and do not mention the promise when you are NOT done
 done, it must be the very last line of your output, with nothing after it.
 
 
-# STEP 0 / BOOTSTRAP — PROMPT_build.md (fed to the agent by loop.sh in build mode)
+# PROMPT_build.md — fed to the agent by `loop.sh -m build`
 
 You are in BUILD MODE.
 
@@ -62,15 +55,17 @@ Never echo the completion promise back for any other reason — do not quote thi
 restate these instructions, and do not mention the promise when you are NOT done. When you are
 done, it must be the very last line of your output, with nothing after it.
 
+# A no-commit variant, PROMPT_plan_nocommit.md, was used for the two Plan stages:
+# it is PROMPT_plan.md with step "Commit the updated plan..." replaced by an
+# explicit "DO NOT COMMIT — leave IMPLEMENTATION_PLAN.md uncommitted for human
+# review", so the plan could be read before it landed.
+
 
 ================================================================================
 # STEP 1 — BASE ARENA
 ================================================================================
 
-# STEP 1 / STAGE 1 — SPECIFY (manual, interactive Claude Code session)
-
-yes, can you do it?
-(approval to run Stage 1; the stage prompt executed was:)
+# STAGE 1 — SPECIFY
 
 Read AGENTS.md. Write specs/base.md — a specification for "Fighting Game", a turn-based
 1v1 battle arena with server-authoritative turn resolution.
@@ -93,10 +88,8 @@ Cover:
 Also create the script/ files (setup, server, test, lint) so the stack in AGENTS.md runs.
 Do not implement game logic yet — spec and scripts only.
 
-# STEP 1 / STAGE 2 — REVIEW (manual, interactive Claude Code session)
 
-okay, we can proceed to stage 2
-(approval to run Stage 2; the stage prompt executed was:)
+# STAGE 2 — REVIEW
 
 Act as a skeptical technical reviewer of specs/base.md. Check: are the damage and ki numbers
 balanced enough that no single move dominates and matches actually end? Is every move's edge case
@@ -104,73 +97,24 @@ defined (guarding with 0 ki, beam with insufficient ki, ascending twice)? Is the
 contract unambiguous? Are the acceptance criteria testable and the test plan adequate?
 List concrete problems and, for each, edit specs/base.md to fix it. Do not implement game code.
 
-# STEP 1 / STAGE 3 — PLAN (loop)
 
-run stage 3, but don't commit
-(approval to run the plan loop as a dry run; the loop was invoked as:)
+# STAGE 3 — PLAN (loop)
 
 ./loop.sh -m plan -n 3 -p PROMPT_plan_nocommit.md
 
-Ran for 1 iteration and stopped on <promise>DONE</promise>.
 
-PROMPT_plan_nocommit.md is PROMPT_plan.md with the commit step replaced by an
-explicit do-not-commit instruction, so the plan could be reviewed by a human
-before landing. Its contents:
+# STAGE 4 — BUILD (loop)
 
-You are in PLAN MODE. Do NOT write application code.
-
-1. Read AGENTS.md and every file in specs/.
-2. Read the current codebase and compare it against the active spec (the newest specs/*.md).
-3. Rewrite IMPLEMENTATION_PLAN.md as a prioritized, checkbox task list ("- [ ] ...") that, if
-   completed in order, fully satisfies the spec's acceptance criteria. Each task must be small,
-   independently testable, and name the files it touches and the tests it needs.
-4. Order tasks so that pure game-rule logic and its unit tests come before HTTP endpoints, and
-   endpoints come before UI.
-5. Verify any library you reference actually exists and is compatible with the stack in AGENTS.md.
-
-DO NOT COMMIT. Do not run `git commit`, `git add`, or `git push`. Leave your changes to
-IMPLEMENTATION_PLAN.md uncommitted in the working tree for human review. This is a dry run.
-
-When the plan is complete, internally consistent, and needs no further changes, print exactly:
-<promise>DONE</promise>
-
-Never echo the completion promise back for any other reason — do not quote this prompt, do not
-restate these instructions, and do not mention the promise when you are NOT done. When you are
-done, it must be the very last line of your output, with nothing after it.
-
-# STEP 1 / STAGE 4 — BUILD (loop)  — IN PROGRESS (15 of 30 plan tasks done)
-
-do it                          -> ./loop.sh -m build -n 3   (blocked, 0 commits)
-(no prompt)                    -> ./loop.sh -m build -n 3   (re-run after fix, 3 commits)
-yes, I was about so suggest checkpoints
-                               -> ./loop.sh -m build -n 10  (10 commits)
-finish phase I and dont do anything else
-                               -> ./loop.sh -m build -n 2   (2 commits, Phase 1 done)
-
-Run in checkpointed batches rather than uncapped, so the output could be
-inspected between batches. PROMPT_build.md contents are logged under
-STEP 0 / BOOTSTRAP above.
-
-The first batch produced ZERO commits. Every Bash command was auto-denied with
-"Ignoring 31 permissions.allow entries from .claude/settings.json: this
-workspace has not been trusted" — a project allowlist has no effect in a
-non-interactive `claude -p` session until the workspace is trusted, and the
-trust dialog never appears in that mode. Fixed by setting
-hasTrustDialogAccepted: true for this project path only in ~/.claude.json.
-
-Notably the agent did NOT fake progress: across all three blocked iterations it
-refused to check the task box or commit, because it could not run ./script/test
-and so could not honestly claim the suite was green.
+./loop.sh -m build -n 3
+./loop.sh -m build -n 10
+./loop.sh -m build -n 2
 
 
 ================================================================================
 # STEP 2 — EXTENSION (AI opponent + persistent tournament)
 ================================================================================
 
-# STEP 2 / STAGE 1 — SPECIFY (manual, interactive Claude Code session)
-
-oh, mb - yeah, start from 1
-(approval to run Step 2 Stage 1; the stage prompt executed was:)
+# STAGE 1 — SPECIFY
 
 Read AGENTS.md and specs/base.md. Write specs/extension.md covering TWO additions:
 
@@ -192,10 +136,8 @@ Include acceptance criteria and a test plan for both (unit tests for the AI poli
 board states; DB tests for bracket creation, advancement, and persistence).
 Do not implement yet.
 
-# STEP 2 / STAGE 2 — REVIEW (manual, interactive Claude Code session)
 
-do it
-(approval to run Step 2 Stage 2; the stage prompt executed was:)
+# STAGE 2 — REVIEW
 
 Review specs/extension.md as a technical reviewer. Is the expectimax evaluation function well
 defined and cheap enough to run per turn? Does the AI ever get stuck in a charge/guard stalemate,
@@ -203,21 +145,20 @@ and is that prevented? Are the DB models normalized, and is bracket advancement 
 byes and odd rosters? Are persistence guarantees actually testable? Fix each issue directly in
 specs/extension.md. Do not implement.
 
-# STEP 2 / STAGE 3 — PLAN (loop)
 
-dry run
-(approval to run the Step 2 plan loop as a dry run; the loop was invoked as:)
+# STAGE 3 — PLAN (loop)
 
 ./loop.sh -m plan -n 3 -p PROMPT_plan_nocommit.md
 
-Ran for 1 iteration and stopped on <promise>DONE</promise>.
-Same no-commit prompt variant used for Step 1 / Stage 3 (logged above), so the
-plan could be read by a human before it landed. Push was neutralized for the
-run via a bogus remote.origin.pushurl, restored afterwards.
 
-Reviewed by hand, then two corrections were made before committing:
-  - draw handling in a bracket slot (new E7.4: replay, never award)
-  - E11's 100ms/100-seed figures aligned to E3.5/E10's 150ms/200 seeds
+# STAGE 4 — BUILD (loop)
 
-# STEP 2 / STAGE 4 — BUILD (loop)
-(pending)
+./loop.sh -m build -n 4
+./loop.sh -m build -n 8
+./loop.sh -m build -n 8
+./loop.sh -m build -n 5
+./loop.sh -m build -n 4
+
+# One build task (4.2, the AI strength suite) was completed by hand rather than
+# by the loop — the loop stalled on it and it required a cross-file design
+# correction. See specs/extension.md E13 for the record.
