@@ -101,6 +101,21 @@ asserted in `frontend/src/MatchScreen.test.tsx`, and CORS is ruled out at the HT
 - (Step 2) Choose AI difficulty on the match screen.
 - (Step 2) Tournament bracket; results persist across server restarts.
 
+### Verified in a browser (2026-07-21)
+
+With `BACKEND_PORT=5055 ./script/server` running, both Step 2 features were exercised in a real
+browser at `http://localhost:5173`:
+
+- The **difficulty selector** (random / heuristic / search) on the match screen, with a match
+  played against the `search` AI.
+- The **tournament** flow: a bracket created from a roster, advanced match by match to a champion,
+  the bracket rendering rounds, winners and byes. A tournament created earlier through the API was
+  still listed — persistence across the session, backed by `backend/data/fightinggame.db`.
+
+Note on platforms: `node_modules` are native to the OS that ran `./script/setup`. Install and run
+in the **same** environment — on Windows use Git Bash, not WSL; a Windows install cannot be run
+under WSL's Linux Node (rollup ships a per-platform binary) and vice versa.
+
 ## Step 2 acceptance sweep (plan task 11.1)
 
 Every `specs/extension.md` §E10 criterion is proven by a named, passing test. The two Step 1
