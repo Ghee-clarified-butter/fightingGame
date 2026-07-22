@@ -424,7 +424,7 @@ installed is the whole stack.
   when `status === "complete"` and not before; two same-fighter entrants render distinct
   `display` labels; standings rows show wins, losses and `eliminated_in`.
 
-- [ ] **10.4 — Tournament screen and navigation.**
+- [x] **10.4 — Tournament screen and navigation.**
   Files: new `frontend/src/TournamentScreen.tsx`, `frontend/src/App.tsx` (a state toggle between
   Arena and Tournament — no router dependency, E9).
   Tests: new `TournamentScreen.test.tsx`, updated `App.test.tsx` — the create form posts roster,
