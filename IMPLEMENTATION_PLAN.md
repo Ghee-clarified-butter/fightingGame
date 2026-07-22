@@ -435,7 +435,7 @@ installed is the whole stack.
 
 ### 11. Acceptance sweep
 
-- [ ] **11.1 — Walk every E10 criterion against the suite.**
+- [x] **11.1 — Walk every E10 criterion against the suite.**
   For each of the 30 checkboxes in E10 (15 AI, 15 tournament), name the test that proves it
   (file + test name) in
   `running.md`; anything unproven becomes a new test in this task, not a checked box. Confirm the
