@@ -417,7 +417,7 @@ installed is the whole stack.
   `random`, offers all three values, is **disabled** once a match is in progress, the current
   difficulty is displayed during the match, and starting a new match sends the chosen value.
 
-- [ ] **10.3 — Bracket rendering (E9).**
+- [x] **10.3 — Bracket rendering (E9).**
   Files: new `frontend/src/components/Bracket.tsx`, `frontend/src/components/Standings.tsx`.
   Tests: new `Bracket.test.tsx`, `Standings.test.tsx` — rounds render in order with every match;
   winners are visibly marked; byes are labelled and show no turn count; the champion is called out
